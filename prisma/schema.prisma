@@ -1,0 +1,56 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id       BigInt         @id @default(autoincrement())
+  googleId String         @unique
+  email    String?
+  picture  String?
+  device   Device[]
+  Activity TurnActivity[]
+}
+
+model Device {
+  id                 String    @unique
+  lastSeen           DateTime? @db.Timestamp(6)
+  name               String?
+  user               User      @relation(fields: [userId], references: [id])
+  userId             BigInt
+  tempToken          String?
+  tempTokenExpiresAt DateTime?
+  secretToken        String?   @unique
+}
+
+model TurnActivity {
+  id            BigInt    @id @default(autoincrement())
+  user          User      @relation(fields: [userId], references: [id])
+  userId        BigInt
+  createdAt     DateTime? @default(now()) @db.Timestamp(6)
+  bytesSent     Int
+  bytesReceived Int
+}
+
+model Release {
+  id                BigInt   @id @default(autoincrement())
+  version           String
+  rolloutPercentage Int      @default(10) // 10% of users
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  url               String
+  type              String   @default("app") // "app" or "system"
+  hash              String
+
+  @@unique([version, type])
+}
