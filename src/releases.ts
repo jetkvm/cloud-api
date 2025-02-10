@@ -35,7 +35,7 @@ async function getLatestVersion(
   }
 
   // Extract version folder names
-  let versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
+  const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
     .filter(Boolean)
     .filter(v => semver.valid(v));
 
@@ -337,6 +337,7 @@ export async function RetrieveLatestApp(req: express.Request, res: express.Respo
 }
 
 // Helper function to convert stream to string
+// eslint-disable-next-line
 async function streamToString(stream: any): Promise<string> {
   const chunks: Uint8Array[] = [];
 
@@ -349,6 +350,7 @@ async function streamToString(stream: any): Promise<string> {
 }
 
 // Helper function to convert stream to buffer
+// eslint-disable-next-line
 async function streamToBuffer(stream: any): Promise<Buffer> {
   const chunks = [];
   for await (const chunk of stream) {

@@ -111,7 +111,6 @@ export const Callback = async (req: express.Request, res: express.Response) => {
       select: { user: { select: { googleId: true } } },
     });
 
-
     const isAdoptedByCurrentUser = deviceAdopted?.user.googleId === tokenClaims.sub;
     const isAdoptedByOther = deviceAdopted && !isAdoptedByCurrentUser;
     if (isAdoptedByOther) {

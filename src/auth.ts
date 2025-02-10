@@ -2,7 +2,6 @@ import { type NextFunction, type Request, type Response } from "express";
 import * as jose from "jose";
 import { UnauthorizedError } from "./errors";
 
-
 export const verifyToken = async (idToken: string) => {
   const JWKS = jose.createRemoteJWKSet(
     new URL("https://www.googleapis.com/oauth2/v3/certs"),
@@ -15,7 +14,7 @@ export const verifyToken = async (idToken: string) => {
     });
 
     return payload;
-  } catch  (e) {
+  } catch (e) {
     console.error(e);
     return null;
   }

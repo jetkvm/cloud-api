@@ -14,6 +14,7 @@ import { authenticated } from "./auth";
 import { prisma } from "./db";
 
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace NodeJS {
     interface ProcessEnv {
       NODE_ENV: "development" | "production";
@@ -40,6 +41,32 @@ declare global {
   }
 }
 
+const requiredEnvVars = [
+  "NODE_ENV",
+  "API_HOSTNAME",
+  "APP_HOSTNAME",
+  "COOKIE_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "CLOUDFLARE_TURN_ID",
+  "CLOUDFLARE_TURN_TOKEN",
+  "R2_ENDPOINT",
+  "R2_ACCESS_KEY_ID",
+  "R2_SECRET_ACCESS_KEY",
+  "R2_BUCKET",
+  "R2_CDN_URL",
+];
+
+const missingEnvVars = requiredEnvVars.filter(envVar => !process.env[envVar]);
+if (missingEnvVars.length > 0) {
+  console.error(
+    `The following required environment variables are missing: ${missingEnvVars.join(", ")}`,
+  );
+  throw Error(
+    `The following required environment variables are missing: ${missingEnvVars.join(", ")}`,
+  );
+}
+
 const app = express();
 app.use(helmet());
 app.disable("x-powered-by");
@@ -64,6 +91,7 @@ app.use(
   }),
 );
 
+// eslint-disable-next-line
 function asyncHandler(fn: any) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     return Promise.resolve(fn(req, res, next)).catch(next);
@@ -84,7 +112,7 @@ app.get(
   asyncAuthGuard,
   asyncHandler(async (req: express.Request, res: express.Response) => {
     const idToken = req.session?.id_token;
-    const { sub, iss, exp, aud, iat, jti, nbf } = jose.decodeJwt(idToken);
+    const { sub, iss } = jose.decodeJwt(idToken);
 
     let user;
     if (iss === "https://accounts.google.com") {
@@ -174,28 +202,21 @@ app.post(
 );
 
 // Error-handling middleware
-app.use(
-  (
-    err: HttpError | Error,
-    req: express.Request,
-    res: express.Response,
-    next: express.NextFunction,
-  ) => {
-    const isProduction = process.env.NODE_ENV === "production";
-    const statusCode = err instanceof HttpError ? err.status : 500;
+app.use((err: HttpError | Error, req: express.Request, res: express.Response) => {
+  const isProduction = process.env.NODE_ENV === "production";
+  const statusCode = err instanceof HttpError ? err.status : 500;
 
-    // Build the error response payload
-    const payload = {
-      name: err.name,
-      message: err.message,
-      ...(isProduction ? {} : { stack: err.stack }),
-    };
+  // Build the error response payload
+  const payload = {
+    name: err.name,
+    message: err.message,
+    ...(isProduction ? {} : { stack: err.stack }),
+  };
 
-    console.error(err);
+  console.error(err);
 
-    res.status(statusCode).json(payload);
-  },
-);
+  res.status(statusCode).json(payload);
+});
 
 const server = app.listen(3000, () => {
   console.log("Server started on port 3000");

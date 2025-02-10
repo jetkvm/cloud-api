@@ -2,6 +2,7 @@ import { PrismaClient } from "@prisma/client";
 
 let prismaClient: PrismaClient;
 declare global {
+  // eslint-disable-next-line no-var
   var __db: PrismaClient | undefined;
 }
 
@@ -18,7 +19,6 @@ if (process.env.NODE_ENV !== "development") {
   }
   prismaClient = global.__db;
 }
-
 
 // Have to cast it manually, because webstorm can't infer it for some reason
 // https://github.com/prisma/prisma/issues/2359#issuecomment-963340538

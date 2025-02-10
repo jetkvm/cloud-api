@@ -5,7 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "NODE_ENV=production node -r ts-node/register ./src/index.ts",
-    "dev": "NODE_ENV=development node --env-file=.env.development -r ts-node/register ./src/index.ts"
+    "dev": "NODE_ENV=development node --env-file=.env.development -r ts-node/register ./src/index.ts",
+    "format": "prettier --write --ignore-unknown .",
+    "lint": "eslint ./src",
+    "format:check": "prettier --check --ignore-unknown .",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
     "node": "21.1.0"
@@ -32,13 +36,17 @@
     "prisma": "^5.13.0",
     "semver": "^7.6.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5",
+    "tsc": "^2.0.4",
     "ws": "^8.17.0"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"
   },
   "devDependencies": {
-    "@types/semver": "^7.5.8"
+    "@eslint/js": "^9.20.0",
+    "@types/semver": "^7.5.8",
+    "eslint": "^9.20.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.24.0"
   }
 }

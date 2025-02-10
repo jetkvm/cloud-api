@@ -23,7 +23,6 @@ The best place to search for answers is our [Documentation](https://jetkvm.com/d
 
 If you've found an issue and want to report it, please check our [Issues](https://github.com/jetkvm/cloud-api/issues) page. Make sure the description contains information about the firmware version you're using, your platform, and a clear explanation of the steps to reproduce the issue.
 
-
 ## Development
 
 This project is built with Node.JS, Prisma and Express.

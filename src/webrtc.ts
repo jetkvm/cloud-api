@@ -3,7 +3,7 @@ import express from "express";
 import * as jose from "jose";
 import { prisma } from "./db";
 import { NotFoundError, UnprocessableEntityError } from "./errors";
-import { IncomingMessage } from "http";
+import http, { IncomingMessage } from "http";
 import { Socket } from "node:net";
 import { Device } from "@prisma/client";
 
@@ -48,13 +48,13 @@ export const CreateSession = async (req: express.Request, res: express.Response)
 
   try {
     inFlight.add(id);
-    const resp: any = await new Promise((res, rej) => {
+    const resp = await new Promise<{ data: string }>((res, rej) => {
       timeout = setTimeout(() => {
         rej(new Error("Timeout waiting for response from ws"));
       }, 5000);
 
       // Hoist the res and rej functions to be used in the finally block for cleanup
-      wsRes = res;
+      wsRes = data => res(data as { data: string });
       wsRej = rej;
 
       ws.addEventListener("message", wsRes);
@@ -142,7 +142,7 @@ async function updateDeviceLastSeen(id: string) {
   }
 }
 
-export const registerWebsocketServer = (server: any) => {
+export const registerWebsocketServer = (server: http.Server) => {
   const wss = new WebSocketServer({ noServer: true });
 
   server.on("upgrade", async (req: IncomingMessage, socket: Socket, head: Buffer) => {
