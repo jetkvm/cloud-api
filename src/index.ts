@@ -38,6 +38,10 @@ declare global {
       R2_CDN_URL: string;
 
       CORS_ORIGINS: string;
+
+      // Real IP
+      REAL_IP_HEADER: string;
+      ICE_SERVERS: string;
     }
   }
 }

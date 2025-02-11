@@ -119,8 +119,9 @@ export const Delete = async (req: express.Request, res: express.Response) => {
   await prisma.device.delete({ where: { id, user: { googleId: sub } } });
 
   // We just removed the device, so we should close any running open socket connections
-  const socket = activeConnections.get(id);
-  if (socket) {
+  const conn = activeConnections.get(id);
+  if (conn) {
+    const [socket] = conn;
     socket.send("Deregistered from server");
     socket.close();
   }
