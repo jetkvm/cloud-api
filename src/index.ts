@@ -36,6 +36,12 @@ declare global {
       R2_SECRET_ACCESS_KEY: string;
       R2_BUCKET: string;
       R2_CDN_URL: string;
+
+      CORS_ORIGINS: string;
+
+      // Real IP
+      REAL_IP_HEADER: string;
+      ICE_SERVERS: string;
     }
   }
 }
@@ -48,7 +54,9 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
-    origin: ["https://app.jetkvm.com", "http://localhost:5173"],
+    origin: process.env.CORS_ORIGINS?.split(",") || [
+      "https://app.jetkvm.com", "http://localhost:5173"
+    ],
     credentials: true,
   }),
 );
