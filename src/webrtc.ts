@@ -7,8 +7,18 @@ import { IncomingMessage } from "http";
 import { Socket } from "node:net";
 import { Device } from "@prisma/client";
 
-export const activeConnections: Map<string, WebSocket> = new Map();
+export const activeConnections: Map<string, [WebSocket, string]> = new Map();
 export const inFlight: Set<string> = new Set();
+
+function toICEServers(str: string) {
+  return str.split(",").filter(
+    (url) => url.startsWith("stun:")
+  );
+}
+
+export const iceServers = toICEServers(
+  process.env.ICE_SERVERS || "stun.cloudflare.com:3478,stun:stun.l.google.com:19302,stun:stun1.l.google.com:5349"
+);
 
 export const CreateSession = async (req: express.Request, res: express.Response) => {
   const idToken = req.session?.id_token;
@@ -35,11 +45,14 @@ export const CreateSession = async (req: express.Request, res: express.Response)
     );
   }
 
-  const ws = activeConnections.get(id);
-  if (!ws) {
+  const wsTuple = activeConnections.get(id);
+  if (!wsTuple) {
     console.log("No socket for id", id);
     throw new NotFoundError(`No socket for id found`, "kvm_socket_not_found");
   }
+
+  // extract the websocket and ip from the tuple
+  const [ws, ip] = wsTuple;
 
   let wsRes: ((value: unknown) => void) | null = null,
     wsRej: ((value: unknown) => void) | null = null;
@@ -63,7 +76,13 @@ export const CreateSession = async (req: express.Request, res: express.Response)
 
       // If the HTTP client closes the connection before the websocket response is received, reject the promise
       req.socket.on("close", wsRej);
-      ws.send(JSON.stringify({ sd, OidcGoogle: idToken }));
+
+      ws.send(JSON.stringify({
+        sd,
+        ip,
+        iceServers,
+        OidcGoogle: idToken
+      }));
     });
 
     return res.json(JSON.parse(resp.data));
@@ -170,7 +189,7 @@ export const registerWebsocketServer = (server: any) => {
       console.log(
         "Device already in active connection list. Terminating & deleting existing websocket.",
       );
-      activeConnections.get(device.id)?.terminate();
+      activeConnections.get(device.id)?.[0]?.terminate();
       activeConnections.delete(device.id);
     }
 
@@ -227,7 +246,11 @@ export const registerWebsocketServer = (server: any) => {
       return ws.close();
     }
 
-    activeConnections.set(id, ws);
+    const ip = (
+      process.env.REAL_IP_HEADER && req.headers[process.env.REAL_IP_HEADER]
+    ) || req.socket.remoteAddress;
+
+    activeConnections.set(id, [ws, ip.toString()]);
     console.log("New socket for id", id);
 
     ws.on("error", async () => {
