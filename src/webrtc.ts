@@ -250,7 +250,7 @@ export const registerWebsocketServer = (server: any) => {
       process.env.REAL_IP_HEADER && req.headers[process.env.REAL_IP_HEADER]
     ) || req.socket.remoteAddress;
 
-    activeConnections.set(id, [ws, ip.toString()]);
+    activeConnections.set(id, [ws, `${ip}`]);
     console.log("New socket for id", id);
 
     ws.on("error", async () => {
