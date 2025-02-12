@@ -64,7 +64,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
     const resp: any = await new Promise((res, rej) => {
       timeout = setTimeout(() => {
         rej(new Error("Timeout waiting for response from ws"));
-      }, 5000);
+      }, 15000);
 
       // Hoist the res and rej functions to be used in the finally block for cleanup
       wsRes = res;
