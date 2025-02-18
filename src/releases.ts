@@ -185,6 +185,23 @@ export async function Retrieve(req: express.Request, res: express.Response) {
     select: { version: true, url: true, rolloutPercentage: true, hash: true },
   });
 
+  /*
+    Return the latest release if forceUpdate is true, bypassing rollout rules.
+    This occurs when a user manually checks for updates in the app UI.
+    Background update checks follow the normal rollout percentage rules, to ensure controlled, gradual deployment of updates.
+  */
+  const forceUpdate = req.query.forceUpdate === "true";
+  if (forceUpdate) {
+    return res.json({
+      appVersion: latestAppRelease.version,
+      appUrl: latestAppRelease.url,
+      appHash: latestAppRelease.hash,
+      systemVersion: latestSystemRelease.version,
+      systemUrl: latestSystemRelease.url,
+      systemHash: latestSystemRelease.hash,
+    });
+  }
+
   const defaultAppRelease = await getDefaultRelease("app");
   const defaultSystemRelease = await getDefaultRelease("system");
 
