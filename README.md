@@ -39,8 +39,8 @@ docker run --name jetkvm-cloud-db \
     -p 5432:5432 \
     -d postgres
 
-# Copy the .env.example file to .env and populate it with the correct values
-cp .env.example .env
+# Copy the .env.example file to a new file .env.development and populate it with the correct values
+cp .env.example .env.development
 
 # Install dependencies
 npm install
