@@ -21,6 +21,8 @@ export const verifyToken = async (idToken: string) => {
   }
 };
 
+
+
 export const authenticated = async (req: Request, res: Response, next: NextFunction) => {
   const idToken = req.session?.id_token;
   if (!idToken) throw new UnauthorizedError();
