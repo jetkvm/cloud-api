@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "NODE_ENV=production node -r ts-node/register ./src/index.ts",
-    "dev": "NODE_ENV=development node --env-file=.env.development -r ts-node/register ./src/index.ts"
+    "dev": "NODE_ENV=development node --env-file=.env.development -r ts-node/register ./src/index.ts",
+    "prebuild:prod": "rm -rf ./dist",
+    "build:prod": "tsc"
   },
   "engines": {
     "node": "21.1.0"
