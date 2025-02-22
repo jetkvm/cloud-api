@@ -5,7 +5,7 @@ import { prisma } from "./db";
 import { NotFoundError, UnprocessableEntityError } from "./errors";
 import { IncomingMessage } from "http";
 import { Socket } from "node:net";
-import { Device } from "@prisma/client";
+import { Device } from "@prisma/client/wasm";
 
 export const activeConnections: Map<string, [WebSocket, string]> = new Map();
 export const inFlight: Set<string> = new Set();
