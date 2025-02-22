@@ -1,0 +1,33 @@
+services:
+  postgres: # be sure to update DATABASE_URL with this hostname
+    image: postgres:15
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jetkvm"]
+      interval: 5s
+      retries: 5
+      timeout: 3s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: production
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "3000:3000"
+    command: ["sh", "-c", "until pg_isready -h postgres -U jetkvm; do sleep 2; done && npx prisma migrate deploy && exec node -r ts-node/register ./src/index.ts"]
+
+volumes:
+  pgdata:
