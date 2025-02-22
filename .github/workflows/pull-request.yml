@@ -19,6 +19,7 @@ jobs:
       with:
         node-version: v21.1.0
         cache: 'npm'
+        cache-dependency-path: '**/package-lock.json'
 
     - name: Install Dependencies and Build
       run: |
