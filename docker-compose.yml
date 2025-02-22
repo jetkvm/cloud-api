@@ -1,5 +1,5 @@
 services:
-  postgres:
+  postgres: # be sure to update DATABASE_URL with this hostname
     image: postgres:15
     restart: always
     env_file:
