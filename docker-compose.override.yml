@@ -14,7 +14,7 @@ services:
       - postgres
     volumes:
       - .:/app
-    command: ["sh", "-c", "npm install && npx prisma migrate dev && npm run dev"]
+    command: ["sh", "-c", "npm install && npm run dev"]
     develop:
       watch:
         - action: sync

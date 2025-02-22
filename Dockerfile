@@ -1,52 +1,37 @@
-    FROM node:21.1.0-alpine AS base
+# Base Stage
+FROM node:21.1.0-alpine AS base
 
-    ARG NODE_ENV=production
-    ENV NODE_ENV=${NODE_ENV}
-    
-    WORKDIR /app
-    
-    RUN apk add --no-cache libc6-compat
-    
-    COPY package.json package-lock.json ./
-    
-    # Development Stage
-    FROM base AS dev
-    
-    RUN npm install
-    
-    COPY . .
-    
-    RUN npx prisma generate
-    
-    RUN chown -R node:node /app
-    
-    USER node
-    
-    EXPOSE 3000
-    
-    # Run development server
-    CMD ["sh", "-c", "npx prisma migrate dev && npm run dev"]
-    
-    #Production Stage
-    FROM base AS prod
-    
-    ENV NODE_ENV=production
-    
-    RUN npm ci --omit=dev
-    
-    COPY --from=dev /app/node_modules ./node_modules
-    COPY --from=dev /app/prisma ./prisma
-    COPY --from=dev /app/src ./src
-    COPY --from=dev /app/package.json ./
-    
-    RUN npx prisma generate
-    
-    RUN chown -R node:node /app
-    
-    USER node
-    
-    EXPOSE 3000
-    
-    # Run Prisma migrations & start the app in production mode
-    CMD ["sh", "-c", "npx prisma migrate deploy && exec npm run start"]
-    
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat
+
+COPY package.json package-lock.json ./
+
+FROM base AS deps
+RUN npm ci
+
+# Build / Dev Stage
+FROM deps AS dev
+COPY . .
+RUN npx prisma generate
+RUN npm run build:prod
+
+CMD ["sh", "-c", "npm run dev"]
+
+# Production Stage 
+FROM node:21.1.0-alpine AS prod
+
+WORKDIR /app
+
+COPY --from=dev /app/dist ./dist
+COPY --from=dev /app/prisma ./prisma
+COPY --from=dev /app/package.json ./
+COPY --from=dev /app/package-lock.json ./
+
+# Install only production dependencies
+RUN npm ci --omit=dev
+
+USER node
+EXPOSE 3000
+
+CMD ["node", "./dist/index.js"]
