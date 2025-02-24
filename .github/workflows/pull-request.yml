@@ -21,12 +21,19 @@ jobs:
         cache: 'npm'
         cache-dependency-path: '**/package-lock.json'
 
+    - name: Cache NPM dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: npm-cache-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        restore-keys: |
+          npm-cache-${{ runner.os }}-
+
     - name: Install Dependencies and Build
       run: |
         npm ci
         npx prisma generate
         npm run build:prod
-
       env:
         CI: true
 
