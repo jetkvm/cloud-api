@@ -1,5 +1,5 @@
 # Base Stage
-FROM node:21.1.0-alpine AS base
+FROM node:22.14.0-bullseye-slim AS base
 WORKDIR /app
 COPY package.json package-lock.json ./
 
@@ -15,7 +15,7 @@ RUN npm run build:prod
 CMD ["sh", "-c", "npm run dev"]
 
 # Production Stage 
-FROM node:21.1.0-alpine AS prod
+FROM node:22.14.0-bullseye-slim AS prod
 WORKDIR /app
 COPY --from=dev /app/dist ./dist
 COPY --from=dev /app/prisma ./prisma
