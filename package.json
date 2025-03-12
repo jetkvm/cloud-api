@@ -23,22 +23,23 @@
     "@types/ws": "^8.5.10",
     "cookie-session": "^2.1.0",
     "cors": "^2.8.5",
-    "express": "^4.19.2",
+    "dotenv": "^16.4.7",
+    "express": "^5",
     "helmet": "^7.1.0",
-    "http-proxy-middleware": "^3.0.0",
+    "http-proxy-middleware": "^3.0.3",
     "jose": "^5.2.4",
     "openid-client": "^5.6.5",
-    "prettier": "3.2.5",
     "prisma": "^5.13.0",
     "semver": "^7.6.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.5",
-    "ws": "^8.17.0"
+    "ws": "^8.17.1"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"
   },
   "devDependencies": {
+    "prettier": "3.2.5",
     "@types/semver": "^7.5.8"
   }
 }

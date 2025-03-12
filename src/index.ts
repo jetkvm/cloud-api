@@ -3,6 +3,7 @@ import cors from "cors";
 import cookieSession from "cookie-session";
 import * as jose from "jose";
 import helmet from "helmet";
+import 'dotenv/config';
 
 import * as Devices from "./devices";
 import * as OIDC from "./oidc";
