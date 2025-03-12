@@ -17,6 +17,7 @@ declare global {
   namespace NodeJS {
     interface ProcessEnv {
       NODE_ENV: "development" | "production";
+      PORT: string;
 
       API_HOSTNAME: string;
       APP_HOSTNAME: string;
@@ -46,6 +47,8 @@ declare global {
   }
 }
 
+const PORT = process.env.PORT || 3000;
+
 const app = express();
 app.use(helmet());
 app.disable("x-powered-by");
@@ -72,17 +75,18 @@ app.use(
   }),
 );
 
+// express-session won't sent the cookie, as it's `secure` and `secureProxy` is set to true
+// DO Apps doesn't send a X-Forwarded-Proto header, so we simply need to make a blanket trust
+app.set("trust proxy", true);
+
 function asyncHandler(fn: any) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
     return Promise.resolve(fn(req, res, next)).catch(next);
   };
 }
 
-// express-session won't sent the cookie, as it's `secure` and `secureProxy` is set to true
-// DO Apps doesn't send a X-Forwarded-Proto header, so we simply need to make a blanket trust
-app.set("trust proxy", true);
-
 const asyncAuthGuard = asyncHandler(authenticated);
+
 app.get("/", (req, res) => {
   return res.status(200).send("OK");
 });
@@ -205,8 +209,8 @@ app.use(
   },
 );
 
-const server = app.listen(3000, () => {
-  console.log("Server started on port 3000");
+const server = app.listen(PORT, () => {
+  console.log("Server started on port " + PORT);
 });
 
 Webrtc.registerWebsocketServer(server);
