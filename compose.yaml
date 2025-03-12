@@ -1,0 +1,44 @@
+name: jetkvm-cloud-api
+
+networks:
+  jetkvm:
+    driver: bridge
+
+services:
+  db:
+    image: postgres
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: jetkvm
+      POSTGRES_USER: jetkvm
+      POSTGRES_DB: jetkvm
+    #ports:
+    # - "5432:5432"
+    networks:
+      - jetkvm
+    volumes:
+      - postgresql:/var/lib/postgresql/data
+
+  app: &app
+    build: .
+    environment:
+      PORT: 5172
+      DATABASE_URL: postgres://jetkvm:jetkvm@db:5432/jetkvm
+    depends_on:
+      - db
+    ports:
+        - "5172:5172"
+    networks:
+      - jetkvm
+
+  # Trigger prisma migration
+  # This can be done in the app container as well, but is generally discouraged.
+  app-migrate:
+    <<: *app
+    command: npm run prisma-migrate
+    ports: []
+    restart: no
+
+volumes:
+  postgresql:
+    driver: local
