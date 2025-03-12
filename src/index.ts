@@ -91,6 +91,13 @@ app.get("/", (req, res) => {
   return res.status(200).send("OK");
 });
 
+app.get("/healthz", (req, res) => {
+  return res.status(200).send({
+    ready: true,
+    time: new Date()
+  })
+});
+
 app.get(
   "/me",
   asyncAuthGuard,
