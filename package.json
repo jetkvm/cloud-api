@@ -1,8 +1,8 @@
 {
   "name": "jetkvm-cloud-api",
   "version": "1.0.0",
-  "description": "",
   "main": "index.js",
+  "description": "JetKVM Cloud API and Websocket Server",
   "scripts": {
     "start": "NODE_ENV=production node -r ts-node/register ./src/index.ts",
     "dev": "NODE_ENV=development node --env-file=.env.development -r ts-node/register ./src/index.ts"
@@ -11,8 +11,8 @@
     "node": "21.1.0"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "JetKVM",
+  "license": "GPL-2.0",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.654.0",
     "@prisma/client": "^5.13.0",
