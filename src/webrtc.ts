@@ -54,10 +54,9 @@ export const CreateSession = async (req: express.Request, res: express.Response)
   // extract the websocket and ip from the tuple
   const [ws, ip] = wsTuple;
 
-  let wsRes: ((value: unknown) => void) | null = null,
-    wsRej: ((value: unknown) => void) | null = null;
-
   let timeout: NodeJS.Timeout | undefined;
+
+  let httpClose: (() => void) | null = null;
 
   try {
     inFlight.add(id);
@@ -66,43 +65,49 @@ export const CreateSession = async (req: express.Request, res: express.Response)
         rej(new Error("Timeout waiting for response from ws"));
       }, 15000);
 
-      // Hoist the res and rej functions to be used in the finally block for cleanup
-      wsRes = res;
-      wsRej = rej;
+      ws.onerror = rej;
+      ws.onclose = rej;
+      ws.onmessage = res;
 
-      ws.addEventListener("message", wsRes);
-      ws.addEventListener("error", wsRej);
-      ws.addEventListener("close", wsRej);
+      httpClose = () => {
+        rej(new Error("HTTP client closed the connection"));
+      };
 
       // If the HTTP client closes the connection before the websocket response is received, reject the promise
-      req.socket.on("close", wsRej);
+      req.socket.on("close", httpClose);
 
-      ws.send(JSON.stringify({
-        sd,
-        ip,
-        iceServers,
-        OidcGoogle: idToken
-      }));
+      ws.send(
+        JSON.stringify({
+          sd,
+          ip,
+          iceServers,
+          OidcGoogle: idToken,
+        }),
+      );
     });
 
     return res.json(JSON.parse(resp.data));
   } catch (e) {
-    console.error(`Error sending data to kvm with ${id}`, e);
-
-    // If there was an error, remove the socket from the map
-    ws.close(); // Most likely there is no-one on the other end to close the connection
-    activeConnections.delete(id);
+    console.log(`Error sending data to kvm with ${id}`, e);
 
     return res
       .status(500)
       .json({ error: "There was an error sending and receiving data to the KVM" });
   } finally {
     if (timeout) clearTimeout(timeout);
+    console.log("Removing in flight", id);
     inFlight.delete(id);
-    if (wsRes && wsRej) {
-      ws.removeEventListener("message", wsRes);
-      ws.removeEventListener("error", wsRej);
-      ws.removeEventListener("close", wsRej);
+
+    if (httpClose) {
+      console.log("Removing http close listener", id);
+      req.socket.off("close", httpClose);
+    }
+
+    if (ws) {
+      console.log("Removing ws listeners", id);
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.onmessage = null;
     }
   }
 };
@@ -246,9 +251,9 @@ export const registerWebsocketServer = (server: any) => {
       return ws.close();
     }
 
-    const ip = (
-      process.env.REAL_IP_HEADER && req.headers[process.env.REAL_IP_HEADER]
-    ) || req.socket.remoteAddress;
+    const ip =
+      (process.env.REAL_IP_HEADER && req.headers[process.env.REAL_IP_HEADER]) ||
+      req.socket.remoteAddress;
 
     activeConnections.set(id, [ws, `${ip}`]);
     console.log("New socket for id", id);
