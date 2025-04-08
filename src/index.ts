@@ -12,6 +12,7 @@ import * as Releases from "./releases";
 import { HttpError } from "./errors";
 import { authenticated } from "./auth";
 import { prisma } from "./db";
+import { initializeWebRTCSignaling } from "./webrtc-signaling";
 
 declare global {
   namespace NodeJS {
@@ -55,22 +56,23 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: process.env.CORS_ORIGINS?.split(",") || [
-      "https://app.jetkvm.com", "http://localhost:5173"
+      "https://app.jetkvm.com",
+      "http://localhost:5173",
     ],
     credentials: true,
   }),
 );
-app.use(
-  cookieSession({
-    name: "session",
-    path: "/",
-    httpOnly: true,
-    keys: [process.env.COOKIE_SECRET],
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-  }),
-);
+export const cookieSessionMiddleware = cookieSession({
+  name: "session",
+  path: "/",
+  httpOnly: true,
+  keys: [process.env.COOKIE_SECRET],
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "strict",
+  maxAge: 24 * 60 * 60 * 1000, // 24 hours
+});
+
+app.use(cookieSessionMiddleware);
 
 function asyncHandler(fn: any) {
   return (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -209,4 +211,4 @@ const server = app.listen(3000, () => {
   console.log("Server started on port 3000");
 });
 
-Webrtc.registerWebsocketServer(server);
+initializeWebRTCSignaling(server);
