@@ -1,4 +1,4 @@
-import { MessageEvent, WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
 import * as jose from "jose";
 import { prisma } from "./db";
