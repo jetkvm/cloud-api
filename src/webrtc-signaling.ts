@@ -172,16 +172,18 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
     await cleanup();
   });
 
-  deviceWs.on("close", async () => {
-    console.log(`[Device] Connection closed for ${id}`);
+  deviceWs.on("close", async (code, reason) => {
+    console.log(
+      `[Device] Connection closed for ${id} with code ${code} and reason ${reason}`,
+    );
     await cleanup();
   });
 
   // Cleanup function
   async function cleanup() {
+    console.log(`[Device] Cleanup for ${id}`);
     activeConnections.delete(id);
     clearInterval(checkAliveInterval);
-    console.log(`[Device] Cleanup for ${id}`);
     await updateDeviceLastSeen(id);
   }
 }
