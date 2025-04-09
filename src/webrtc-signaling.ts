@@ -83,7 +83,7 @@ async function handleDeviceSocketRequest(
     // Handle existing connections for this device
     if (activeConnections.has(device.id)) {
       console.log(
-        `[Device WS] Device ${device.id} already connected. Terminating existing connection.`,
+        `[Device] Device ${device.id} already connected. Terminating existing connection.`,
       );
       activeConnections.get(device.id)?.[0]?.terminate();
       activeConnections.delete(device.id);
@@ -143,7 +143,7 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
   // Store the connection
   activeConnections.set(id, [deviceWs, `${ip}`, deviceVersion || null]);
   console.log(
-    `[Device WS] New connection for device ${id}, with version ${deviceVersion || "unknown"}`,
+    `[Device] New connection for device ${id}, with version ${deviceVersion || "unknown"}`,
   );
 
   // Setup ping/pong for connection health checks
@@ -157,7 +157,7 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
   const checkAliveInterval = setInterval(function checkAlive() {
     // @ts-ignore
     if (deviceWs.isAlive === false) {
-      console.log("[Device WS] WS is not alive. Terminating connection.");
+      console.log(`[Device WS] ${id} is not alive. Terminating connection.`);
       return deviceWs.terminate();
     }
     // @ts-ignore
