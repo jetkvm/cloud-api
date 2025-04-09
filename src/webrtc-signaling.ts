@@ -85,10 +85,20 @@ async function handleDeviceSocketRequest(
       console.log(
         `[Device] Device ${device.id} already connected. Terminating existing connection.`,
       );
-      activeConnections.get(device.id)?.[0]?.terminate();
-      activeConnections.delete(device.id);
-      // We don't return here, we just delete the existing connection and let it continue and create a new one.
-      // Why multiple connections are needed, i don't know, but let's cover it.
+
+      const [existingDeviceWs] = activeConnections.get(device.id)!;
+      await new Promise(resolve => {
+        console.log("[Device] Waiting for existing connection to close...");
+        existingDeviceWs.on("close", () => {
+          activeConnections.delete(device.id);
+          console.log("[Device] Existing connection closed.");
+
+          // Now we continue with the new connection
+          resolve(true);
+        });
+
+        existingDeviceWs.terminate();
+      });
     }
 
     // Complete the WebSocket upgrade
