@@ -71,6 +71,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
       );
     });
 
+    console.log("[CreateSession] got response from device", id);
     return res.json(JSON.parse(resp.data));
   } catch (e) {
     console.log(`Error sending data to kvm with ${id}`, e);
