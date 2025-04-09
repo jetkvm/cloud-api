@@ -75,7 +75,7 @@ async function handleDeviceSocketRequest(
     // Inflight means that the device has connected, a client has connected to that device via HTTP, and they're now doing the signaling dance
     if (inFlight.has(device.id)) {
       console.log(
-        `[Device WS] Device ${device.id} already has an inflight client connection.`,
+        `[Device] Device ${device.id} already has an inflight client connection.`,
       );
       return socket.destroy();
     }
@@ -107,26 +107,26 @@ async function authenticateDeviceRequest(req: IncomingMessage) {
   const secretToken = authHeader?.split(" ")?.[1];
 
   if (!secretToken) {
-    console.log("[Device WS] No authorization header provided.");
+    console.log("[Device] No authorization header provided.");
     return null;
   }
 
   try {
     const device = await prisma.device.findFirst({ where: { secretToken } });
     if (!device) {
-      console.log("[Device WS] Invalid secret token provided.");
+      console.log("[Device] Invalid secret token provided.");
       return null;
     }
 
     const id = req.headers["x-device-id"] as string;
     if (!id || id !== device.id) {
-      console.log("[Device WS] Invalid device ID or ID/token mismatch.");
+      console.log("[Device] Invalid device ID or ID/token mismatch.");
       return null;
     }
 
     return device;
   } catch (error) {
-    console.error("[Device WS] Error authenticating device:", error);
+    console.error("[Device] Error authenticating device:", error);
     return null;
   }
 }
@@ -157,7 +157,7 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
   const checkAliveInterval = setInterval(function checkAlive() {
     // @ts-ignore
     if (deviceWs.isAlive === false) {
-      console.log(`[Device WS] ${id} is not alive. Terminating connection.`);
+      console.log(`[Device] ${id} is not alive. Terminating connection.`);
       return deviceWs.terminate();
     }
     // @ts-ignore
