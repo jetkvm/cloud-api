@@ -285,7 +285,12 @@ function setupClientWebSocket(clientWs: WebSocket, deviceId: string, token: stri
     return clientWs.close();
   }
 
-  console.log("[Client] Sending client connected message to device", version);
+  console.log(
+    "[Client] Sending client device-metadata, version:",
+    version,
+    " - ",
+    deviceId,
+  );
 
   clientWs.send(
     JSON.stringify({
