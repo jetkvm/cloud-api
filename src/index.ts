@@ -13,6 +13,7 @@ import * as Releases from "./releases";
 import { HttpError } from "./errors";
 import { authenticated } from "./auth";
 import { prisma } from "./db";
+import { initializeWebRTCSignaling } from "./webrtc-signaling";
 
 declare global {
   namespace NodeJS {
@@ -59,22 +60,23 @@ app.use(express.urlencoded({ extended: true }));
 app.use(
   cors({
     origin: process.env.CORS_ORIGINS?.split(",") || [
-      "https://app.jetkvm.com", "http://localhost:5173"
+      "https://app.jetkvm.com",
+      "http://localhost:5173",
     ],
     credentials: true,
   }),
 );
-app.use(
-  cookieSession({
-    name: "session",
-    path: "/",
-    httpOnly: true,
-    keys: [process.env.COOKIE_SECRET],
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-  }),
-);
+export const cookieSessionMiddleware = cookieSession({
+  name: "session",
+  path: "/",
+  httpOnly: true,
+  keys: [process.env.COOKIE_SECRET],
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "strict",
+  maxAge: 24 * 60 * 60 * 1000, // 24 hours
+});
+
+app.use(cookieSessionMiddleware);
 
 // express-session won't sent the cookie, as it's `secure` and `secureProxy` is set to true
 // DO Apps doesn't send a X-Forwarded-Proto header, so we simply need to make a blanket trust
@@ -213,4 +215,4 @@ const server = app.listen(PORT, () => {
   console.log("Server started on port " + PORT);
 });
 
-Webrtc.registerWebsocketServer(server);
+initializeWebRTCSignaling(server);
