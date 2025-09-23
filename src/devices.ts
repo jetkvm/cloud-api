@@ -7,9 +7,9 @@ import {
   UnauthorizedError,
   UnprocessableEntityError,
 } from "./errors";
-import { activeConnections } from "./webrtc";
 import * as crypto from "crypto";
 import { authenticated } from "./auth";
+import { activeConnections } from "./webrtc-signaling";
 
 export const List = async (req: express.Request, res: express.Response) => {
   const idToken = req.session?.id_token;
