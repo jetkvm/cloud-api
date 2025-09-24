@@ -23,7 +23,6 @@ The best place to search for answers is our [Documentation](https://jetkvm.com/d
 
 If you've found an issue and want to report it, please check our [Issues](https://github.com/jetkvm/cloud-api/issues) page. Make sure the description contains information about the firmware version you're using, your platform, and a clear explanation of the steps to reproduce the issue.
 
-
 ## Development
 
 This project is built with Node.JS, Prisma and Express.
@@ -31,16 +30,24 @@ This project is built with Node.JS, Prisma and Express.
 To start the development server, run:
 
 ```bash
-# For local development, you can use the following command to start a postgres instanc
+# Copy the .env.example file to a new file .env.development and populate it with the correct values
+cp .env.example .env.development
+
+# For local development you can use docker compose to bring up your environment
+
+# this will run docker-compose.yml with docker-compose.override.yml applied
+
+docker compose up --build
+
+# Or you can run a postgres container only
+
 # Don't use in production
 docker run --name jetkvm-cloud-db \
     -e POSTGRES_USER=jetkvm \
     -e POSTGRES_PASSWORD=mysecretpassword \
     -e POSTGRES_DB=jetkvm \
+    -p 5432:5432 \
     -d postgres
-
-# Copy the .env.example file to .env and populate it with the correct values
-cp .env.example .env
 
 # Install dependencies
 npm install

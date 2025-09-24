@@ -1,0 +1,10 @@
+.git
+.github
+.env*
+.prettierrc
+.gitignore
+.dockerignore
+*.md
+Dockerfile
+node_modules
+publish_source.sh

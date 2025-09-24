@@ -1,0 +1,30 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dev
+      args:
+        NODE_ENV: development
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.development
+    depends_on:
+      - postgres
+    volumes:
+      - .:/app
+    command: ["sh", "-c", "npm install && npm run dev"]
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
+          ignore:
+            - node_modules/
+        - action: rebuild
+          path: package.json
+
+  postgres:
+    env_file:
+      - .env.development
