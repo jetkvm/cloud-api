@@ -19,7 +19,6 @@ if (process.env.NODE_ENV !== "development") {
   prismaClient = global.__db;
 }
 
-
 // Have to cast it manually, because webstorm can't infer it for some reason
 // https://github.com/prisma/prisma/issues/2359#issuecomment-963340538
 export const prisma = prismaClient;

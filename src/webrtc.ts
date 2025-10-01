@@ -1,4 +1,3 @@
-import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
 import * as jose from "jose";
 import { prisma } from "./db";
@@ -39,7 +38,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
   // extract the websocket and ip from the tuple
   const [ws, ip] = wsTuple;
 
-  let timeout: NodeJS.Timeout | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   let httpClose: (() => void) | null = null;
 
