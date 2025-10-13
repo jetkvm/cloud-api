@@ -26,7 +26,7 @@ If you've found an issue and want to report it, please check our [Issues](https:
 
 ## Development
 
-This project is built with Node.JS, Prisma and Express.
+This project is built on Node.JS using Prisma and Express.
 
 To start the development server, run:
 
