@@ -1,4 +1,3 @@
-import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
 import * as jose from "jose";
 import { prisma } from "./db";
@@ -39,7 +38,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
   // extract the websocket and ip from the tuple
   const [ws, ip] = wsTuple;
 
-  let timeout: NodeJS.Timeout | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   let httpClose: (() => void) | null = null;
 
@@ -122,7 +121,7 @@ export const CreateIceCredentials = async (
     throw new Error("No ice servers returned");
   }
 
-  if (data.iceServers.urls instanceof Array) {
+  if (Array.isArray(data.iceServers.urls)) {
     data.iceServers.urls = data.iceServers.urls.filter(url => !url.startsWith("turns"));
   }
 
