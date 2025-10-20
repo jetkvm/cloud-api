@@ -121,7 +121,7 @@ export const CreateIceCredentials = async (
     throw new Error("No ice servers returned");
   }
 
-  if (data.iceServers.urls instanceof Array) {
+  if (Array.isArray(data.iceServers.urls)) {
     data.iceServers.urls = data.iceServers.urls.filter(url => !url.startsWith("turns"));
   }
 
