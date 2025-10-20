@@ -1,12 +1,11 @@
 {
   "extends": "@tsconfig/node22/tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "target": "es5",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "outDir": "dist",
-    "sourceMap": false,
+    "sourceMap": false
   },
   "include": [
     "src"
