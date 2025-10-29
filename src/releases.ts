@@ -4,7 +4,16 @@ import { BadRequestError, InternalServerError, NotFoundError } from "./errors";
 import { createHash } from "crypto";
 import semver from "semver";
 
+
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import { LRUCache } from 'lru-cache';
+
+export interface ReleaseMetadata {
+  version: string;
+  url: string;
+  hash: string;
+  _cachedAt?: number;
+}
 
 const s3Client = new S3Client({
   endpoint: process.env.R2_ENDPOINT!,
@@ -15,13 +24,29 @@ const s3Client = new S3Client({
   region: "auto",
 });
 
+const releaseCache = new LRUCache<string, ReleaseMetadata>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
+
+const systemRecoveryImageCache = new LRUCache<string, string>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
+
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
 
 async function getLatestVersion(
   prefix: "app" | "system",
   includePrerelease: boolean,
-): Promise<{ version: string; url: string; hash: string }> {
+): Promise<ReleaseMetadata> {
+  const cacheKey = `${prefix}-${includePrerelease}`;
+  const cached = releaseCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const listCommand = new ListObjectsV2Command({
     Bucket: bucketName,
     Prefix: prefix + "/",
@@ -59,16 +84,44 @@ async function getLatestVersion(
   );
 
   const hash = await streamToString(hashResponse.Body);
-  return { version: latestVersion, url, hash };
+
+  // Cache the release metadata
+  const release = { version: latestVersion, url, hash, _cachedAt: Date.now() };
+  releaseCache.set(cacheKey, release);
+  return release;
 }
 
 interface Release {
   appVersion: string;
   appUrl: string;
   appHash: string;
+  appCachedAt?: number;
+
   systemVersion: string;
   systemUrl: string;
   systemHash: string;
+  systemCachedAt?: number;
+}
+
+function setAppRelease(release: Release, appRelease: ReleaseMetadata) {
+  release.appVersion = appRelease.version;
+  release.appUrl = appRelease.url;
+  release.appHash = appRelease.hash;
+  release.appCachedAt = appRelease._cachedAt;
+}
+
+function setSystemRelease(release: Release, systemRelease: ReleaseMetadata) {
+  release.systemVersion = systemRelease.version;
+  release.systemUrl = systemRelease.url;
+  release.systemHash = systemRelease.hash;
+  release.systemCachedAt = systemRelease._cachedAt;
+}
+
+function toRelease(appRelease?: ReleaseMetadata, systemRelease?: ReleaseMetadata): Release {
+  const release: Partial<Release> = {};
+  if (appRelease) setAppRelease(release as Release, appRelease);
+  if (systemRelease) setSystemRelease(release as Release, systemRelease);
+  return release as Release;
 }
 
 async function getReleaseFromS3(includePrerelease: boolean): Promise<Release> {
@@ -77,14 +130,7 @@ async function getReleaseFromS3(includePrerelease: boolean): Promise<Release> {
     getLatestVersion("system", includePrerelease),
   ]);
 
-  return {
-    appVersion: appRelease.version,
-    appUrl: appRelease.url,
-    appHash: appRelease.hash,
-    systemVersion: systemRelease.version,
-    systemUrl: systemRelease.url,
-    systemHash: systemRelease.hash,
-  };
+  return toRelease(appRelease, systemRelease);
 }
 
 async function isDeviceEligibleForLatestRelease(
@@ -147,14 +193,7 @@ export async function Retrieve(req: express.Request, res: express.Response) {
   // This is useful for the OTA updater to get the latest prerelease version
   // This also prevents us from storing the rollout percentage for prerelease versions
   if (includePrerelease) {
-    return res.json({
-      appVersion: remoteRelease.appVersion,
-      appUrl: remoteRelease.appUrl,
-      appHash: remoteRelease.appHash,
-      systemVersion: remoteRelease.systemVersion,
-      systemUrl: remoteRelease.systemUrl,
-      systemHash: remoteRelease.systemHash,
-    });
+    return res.json(remoteRelease);
   }
 
   // Fetch or create the latest app release
@@ -192,34 +231,20 @@ export async function Retrieve(req: express.Request, res: express.Response) {
   */
   const forceUpdate = req.query.forceUpdate === "true";
   if (forceUpdate) {
-    return res.json({
-      appVersion: latestAppRelease.version,
-      appUrl: latestAppRelease.url,
-      appHash: latestAppRelease.hash,
-      systemVersion: latestSystemRelease.version,
-      systemUrl: latestSystemRelease.url,
-      systemHash: latestSystemRelease.hash,
-    });
+    return res.json(
+      toRelease(latestAppRelease, latestSystemRelease),
+    );
   }
 
   const defaultAppRelease = await getDefaultRelease("app");
   const defaultSystemRelease = await getDefaultRelease("system");
 
-  const responseJson = {
-    appVersion: defaultAppRelease.version,
-    appUrl: defaultAppRelease.url,
-    appHash: defaultAppRelease.hash,
-    systemVersion: defaultSystemRelease.version,
-    systemUrl: defaultSystemRelease.url,
-    systemHash: defaultSystemRelease.hash,
-  };
+  const responseJson = toRelease(defaultAppRelease, defaultSystemRelease);
 
   if (
     await isDeviceEligibleForLatestRelease(latestAppRelease.rolloutPercentage, deviceId)
   ) {
-    responseJson.appVersion = latestAppRelease.version;
-    responseJson.appUrl = latestAppRelease.url;
-    responseJson.appHash = latestAppRelease.hash;
+    setAppRelease(responseJson, latestAppRelease);
   }
 
   if (
@@ -228,9 +253,7 @@ export async function Retrieve(req: express.Request, res: express.Response) {
       deviceId,
     )
   ) {
-    responseJson.systemVersion = latestSystemRelease.version;
-    responseJson.systemUrl = latestSystemRelease.url;
-    responseJson.systemHash = latestSystemRelease.hash;
+    setSystemRelease(responseJson, latestSystemRelease);
   }
 
   return res.json(responseJson);
@@ -241,6 +264,12 @@ export async function RetrieveLatestSystemRecovery(
   res: express.Response,
 ) {
   const includePrerelease = req.query.prerelease === "true";
+
+  const cacheKey = `system-recovery-${includePrerelease}`;
+  const cached = systemRecoveryImageCache.get(cacheKey);
+  if (cached) {
+    return res.redirect(302, cached);
+  }
 
   // Get the latest system recovery image from S3. It's stored in the system/ folder.
   const listCommand = new ListObjectsV2Command({
@@ -265,6 +294,7 @@ export async function RetrieveLatestSystemRecovery(
   }) as string;
 
   const [firmwareFile, hashFile] = await Promise.all([
+    // TODO: store file hash using custom header to avoid extra request
     s3Client.send(
       new GetObjectCommand({
         Bucket: bucketName,
@@ -295,7 +325,10 @@ export async function RetrieveLatestSystemRecovery(
 
   console.log("system recovery image hash matches", latestVersion);
 
-  return res.redirect(302, `${baseUrl}/system/${latestVersion}/update.img`);
+  const url = `${baseUrl}/system/${latestVersion}/update.img`;
+  systemRecoveryImageCache.set(cacheKey, url);
+
+  return res.redirect(302, url);
 }
 
 export async function RetrieveLatestApp(req: express.Request, res: express.Response) {
