@@ -75,6 +75,9 @@ async function getLatestVersion(
   const latestVersion = semver.maxSatisfying(versions, maxSatisfying, {
     includePrerelease,
   }) as string;
+  if (!latestVersion) {
+    throw new NotFoundError(`No version found under prefix ${prefix} that satisfies ${maxSatisfying}`);
+  }
 
   const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
   const url = `${baseUrl}/${prefix}/${latestVersion}/${fileName}`;
@@ -207,7 +210,10 @@ export async function Retrieve(req: Request, res: Response) {
     remoteRelease = await getReleaseFromS3(includePrerelease, { appVersion, systemVersion });
   } catch (error) {
     console.error(error);
-    throw new InternalServerError("Failed to get the latest release from S3");
+    if (error instanceof NotFoundError) {
+      throw error;
+    }
+    throw new InternalServerError(`Failed to get the latest release from S3: ${error}`);
   }
 
   // If the request is for prereleases, ignore the rollout percentage and just return the latest release
