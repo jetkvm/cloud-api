@@ -25,7 +25,14 @@ export const List = async (req: express.Request, res: express.Response) => {
 
     return res.json({
       devices: devices.map(device => {
-        return { ...device, online: activeConnections.has(device.id) };
+        const activeDevice = activeConnections.get(device.id);
+        const version = activeDevice?.[2] || null;
+
+        return {
+          ...device,
+          online: !!activeDevice,
+          version,
+        };
       }),
     });
   } else {
