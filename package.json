@@ -1,6 +1,6 @@
 {
   "name": "jetkvm-cloud-api",
-  "version": "1.0.0",
+  "version": "2025.10.20.2000",
   "description": "JetKVM Cloud API and Websocket Server",
   "main": "dist/src/index.js",
   "scripts": {
@@ -13,40 +13,40 @@
     "build": "tsc"
   },
   "engines": {
-    "node": "21.1.0"
+    "node": "^22.15.0"
   },
   "keywords": [],
   "author": "JetKVM",
   "license": "GPL-2.0",
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.654.0",
+    "@aws-sdk/client-s3": "^3.913.0",
     "@prisma/client": "^5.13.0",
-    "@tsconfig/node22": "^22.0.0",
+    "@tsconfig/node22": "^22.0.2",
     "@types/cookie-session": "^2.0.49",
-    "@types/cors": "^2.8.17",
-    "@types/node": "^20.12.10",
-    "@types/ws": "^8.5.10",
-    "cookie-session": "^2.1.0",
+    "@types/cors": "^2.8.19",
+    "@types/node": "^24.9.0",
+    "@types/ws": "^8.18.1",
+    "cookie-session": "^2.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^5",
+    "express": "^5.1.0",
     "helmet": "^7.1.0",
-    "http-proxy-middleware": "^3.0.3",
+    "http-proxy-middleware": "^3.0.5",
     "jose": "^5.2.4",
     "lru-cache": "^11.2.2",
     "openid-client": "^5.6.5",
     "prisma": "^5.13.0",
-    "semver": "^7.6.3",
+    "semver": "^7.7.3",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5",
-    "ws": "^8.17.1"
+    "typescript": "^5.9.3",
+    "ws": "^8.18.3"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"
   },
   "devDependencies": {
     "@types/lru-cache": "^7.10.9",
-    "@types/semver": "^7.5.8",
-    "prettier": "3.2.5"
+    "@types/semver": "^7.7.1",
+    "prettier": "3.6.2"
   }
 }
