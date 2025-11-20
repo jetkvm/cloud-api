@@ -8,6 +8,27 @@ const API_HOSTNAME = process.env.API_HOSTNAME;
 const APP_HOSTNAME = process.env.APP_HOSTNAME;
 const REDIRECT_URI = `${API_HOSTNAME}/oidc/callback`;
 
+/**
+ * Validates that a returnTo URL belongs to the application's domain.
+ * Only allows URLs with the same host as APP_HOSTNAME.
+ *
+ * @param returnTo - The URL to validate
+ * @param appHostname - The application's hostname from APP_HOSTNAME env var
+ * @returns true if valid, false otherwise
+ */
+function isValidReturnToUrl(returnTo: string, appHostname: string): boolean {
+  try {
+    const returnToUrl = new URL(returnTo);
+    const appUrl = new URL(appHostname);
+
+    // Only allow same host (includes protocol, hostname, and port)
+    return returnToUrl.host === appUrl.host;
+  } catch {
+    // Invalid URL format
+    return false;
+  }
+}
+
 const getGoogleOIDCClient = async () => {
   const googleIssuer = await Issuer.discover("https://accounts.google.com");
   return new googleIssuer.Client({
@@ -27,7 +48,20 @@ export const Google = async (req: express.Request, res: express.Response) => {
   req.session!.csrf = state.get("csrf");
 
   req.session!.deviceId = req.body.deviceId;
-  req.session!.returnTo = req.body.returnTo;
+
+  // Validate returnTo URL if provided
+  const requestedReturnTo = req.body.returnTo;
+  if (requestedReturnTo) {
+    if (!isValidReturnToUrl(requestedReturnTo, APP_HOSTNAME)) {
+      throw new BadRequestError(
+        "Invalid returnTo URL: must be a valid URL within the application domain",
+        "invalid_return_to_url"
+      );
+    }
+    req.session!.returnTo = requestedReturnTo;
+  } else {
+    req.session!.returnTo = null;
+  }
 
   const code_verifier = generators.codeVerifier();
   const code_challenge = generators.codeChallenge(code_verifier);
@@ -148,12 +182,30 @@ export const Callback = async (req: express.Request, res: express.Response) => {
 
     console.log("Adopted device", deviceId, "for user", tokenClaims.sub);
 
+    // Validate returnTo before redirecting (defense in depth)
+    if (!isValidReturnToUrl(returnTo, APP_HOSTNAME)) {
+      console.warn("Invalid returnTo URL detected at redirect point:", returnTo);
+      // Fall back to safe default
+      const safeUrl = new URL(`${APP_HOSTNAME}/devices`);
+      safeUrl.searchParams.append("tempToken", tempToken);
+      safeUrl.searchParams.append("deviceId", deviceId);
+      safeUrl.searchParams.append("oidcGoogle", tokenSet.id_token.toString());
+      safeUrl.searchParams.append("clientId", process.env.GOOGLE_CLIENT_ID);
+      return res.redirect(safeUrl.toString());
+    }
+
     const url = new URL(returnTo);
     url.searchParams.append("tempToken", tempToken);
     url.searchParams.append("deviceId", deviceId);
     url.searchParams.append("oidcGoogle", tokenSet.id_token.toString());
     url.searchParams.append("clientId", process.env.GOOGLE_CLIENT_ID);
     return res.redirect(url.toString());
+  }
+  // Validate returnTo before redirecting (defense in depth)
+  if (!isValidReturnToUrl(returnTo, APP_HOSTNAME)) {
+    console.warn("Invalid returnTo URL detected at redirect point:", returnTo);
+    // Fall back to safe default
+    return res.redirect(`${APP_HOSTNAME}/devices`);
   }
   return res.redirect(returnTo);
 };
