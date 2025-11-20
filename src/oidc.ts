@@ -8,6 +8,27 @@ const API_HOSTNAME = process.env.API_HOSTNAME;
 const APP_HOSTNAME = process.env.APP_HOSTNAME;
 const REDIRECT_URI = `${API_HOSTNAME}/oidc/callback`;
 
+/**
+ * Validates that a returnTo URL belongs to the application's domain.
+ * Only allows URLs with the same host as APP_HOSTNAME.
+ *
+ * @param returnTo - The URL to validate
+ * @param appHostname - The application's hostname from APP_HOSTNAME env var
+ * @returns true if valid, false otherwise
+ */
+export function isValidReturnToUrl(returnTo: string, appHostname: string): boolean {
+  try {
+    const returnToUrl = new URL(returnTo);
+    const appUrl = new URL(appHostname);
+
+    // Only allow same host (includes protocol, hostname, and port)
+    return returnToUrl.host === appUrl.host;
+  } catch {
+    // Invalid URL format
+    return false;
+  }
+}
+
 const getGoogleOIDCClient = async () => {
   const googleIssuer = await Issuer.discover("https://accounts.google.com");
   return new googleIssuer.Client({
@@ -27,7 +48,20 @@ export const Google = async (req: express.Request, res: express.Response) => {
   req.session!.csrf = state.get("csrf");
 
   req.session!.deviceId = req.body.deviceId;
-  req.session!.returnTo = req.body.returnTo;
+
+  // Validate returnTo URL if provided
+  const requestedReturnTo = req.body.returnTo;
+  if (requestedReturnTo) {
+    if (!isValidReturnToUrl(requestedReturnTo, APP_HOSTNAME)) {
+      throw new BadRequestError(
+        "Invalid returnTo URL: must be a valid URL within the application domain",
+        "invalid_return_to_url"
+      );
+    }
+    req.session!.returnTo = requestedReturnTo;
+  } else {
+    req.session!.returnTo = null;
+  }
 
   const code_verifier = generators.codeVerifier();
   const code_challenge = generators.codeChallenge(code_verifier);
