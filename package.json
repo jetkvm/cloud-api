@@ -10,7 +10,11 @@
     "prisma-dev": "prisma generate --watch",
     "prisma-dev-migrate": "prisma migrate dev",
     "prisma-migrate": "prisma migrate deploy",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": "21.1.0"
@@ -47,6 +51,9 @@
   "devDependencies": {
     "@types/lru-cache": "^7.10.9",
     "@types/semver": "^7.5.8",
-    "prettier": "3.2.5"
+    "@vitest/coverage-v8": "^4.0.12",
+    "@vitest/ui": "^4.0.12",
+    "prettier": "3.2.5",
+    "vitest": "^4.0.12"
   }
 }

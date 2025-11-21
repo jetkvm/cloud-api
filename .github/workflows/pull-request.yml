@@ -33,7 +33,12 @@ jobs:
       run: |
         npm ci
         npx prisma generate
-        npm run build:prod
+        npm run build
+      env:
+        CI: true
+
+    - name: Run Tests
+      run: npm test
       env:
         CI: true
 
