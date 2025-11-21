@@ -52,6 +52,95 @@ npx prisma migrate deploy
 npm run dev
 ```
 
+## Testing
+
+This project uses [Vitest](https://vitest.dev/) as its testing framework. Tests are colocated with source files using the `*.test.ts` naming pattern.
+
+### Running Tests
+
+```bash
+# Run all tests once
+npm test
+
+# Run tests in watch mode (reruns on file changes)
+npm run test:watch
+
+# Open interactive UI for test exploration
+npm run test:ui
+
+# Run tests with coverage report
+npm run test:coverage
+```
+
+### Writing Tests
+
+Tests are located next to their source files (e.g., `helpers.ts` has `helpers.test.ts`). Vitest provides Jest-compatible APIs with `describe`, `it`, and `expect` available globally.
+
+**Basic test structure:**
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { functionToTest } from './module';
+
+describe('Module Name', () => {
+  it('should perform expected behavior', () => {
+    const result = functionToTest('input');
+    expect(result).toBe('expected output');
+  });
+});
+```
+
+**Testing async functions:**
+
+```typescript
+it('should handle async operations', async () => {
+  const result = await asyncFunction();
+  expect(result).toBeDefined();
+});
+```
+
+**Testing error classes:**
+
+```typescript
+it('should create error with correct properties', () => {
+  const error = new CustomError(400, 'Bad Request');
+  expect(error).toBeInstanceOf(Error);
+  expect(error.status).toBe(400);
+  expect(error.message).toBe('Bad Request');
+});
+```
+
+### Common Assertions
+
+- `expect(value).toBe(expected)` - Strict equality (===)
+- `expect(value).toEqual(expected)` - Deep equality for objects/arrays
+- `expect(value).toBeDefined()` - Value is not undefined
+- `expect(value).toBeUndefined()` - Value is undefined
+- `expect(value).toBeInstanceOf(Class)` - Instance check
+- `expect(value).toBeGreaterThan(n)` - Numeric comparison
+- `expect(value).toBeLessThan(n)` - Numeric comparison
+- `expect(fn).toThrow()` - Function throws error
+
+### Testing Guidelines
+
+1. **Test file location**: Place test files next to the source file being tested
+2. **Test naming**: Use descriptive test names that explain the expected behavior
+3. **Test organization**: Group related tests using `describe` blocks
+4. **Test isolation**: Each test should be independent and not rely on other tests
+5. **Coverage target**: Aim for meaningful coverage of critical logic, not just percentage metrics
+6. **Mock external dependencies**: Use Vitest mocks for external APIs, databases, or file system operations
+
+### Test Coverage
+
+Coverage reports are generated in the `coverage/` directory when running `npm run test:coverage`. The report includes:
+
+- **Line coverage**: Percentage of code lines executed
+- **Branch coverage**: Percentage of conditional branches tested
+- **Function coverage**: Percentage of functions called
+- **Statement coverage**: Percentage of statements executed
+
+View the HTML report by opening `coverage/index.html` in your browser.
+
 ## Production
 
 ```bash
