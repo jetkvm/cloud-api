@@ -36,6 +36,12 @@ const redirectCache = new LRUCache<string, string>({
   ttl: 5 * 60 * 1000, // 5 minutes
 });
 
+/** Clear all caches - useful for testing */
+export function clearCaches() {
+  releaseCache.clear();
+  redirectCache.clear();
+}
+
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
 
@@ -327,6 +333,10 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       includePrerelease,
     }) as string;
 
+    if (!latestVersion) {
+      throw new NotFoundError("No valid system recovery versions found");
+    }
+
     const [firmwareFile, hashFile] = await Promise.all([
       // TODO: store file hash using custom header to avoid extra request
       s3Client.send(
@@ -355,7 +365,7 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
 
     return `${baseUrl}/system/${latestVersion}/update.img`;
   },
-); 
+);
 
 export const RetrieveLatestApp = cachedRedirect(
   (req: Request) => `app-${req.query.prerelease === "true" ? "pre" : "stable"}`,
@@ -381,6 +391,10 @@ export const RetrieveLatestApp = cachedRedirect(
     const latestVersion = semver.maxSatisfying(versions, "*", {
       includePrerelease,
     }) as string;
+
+    if (!latestVersion) {
+      throw new NotFoundError("No valid app versions found");
+    }
 
     // Get the app file and its hash
     const [appFile, hashFile] = await Promise.all([

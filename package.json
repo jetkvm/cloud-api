@@ -10,7 +10,10 @@
     "prisma-dev": "prisma generate --watch",
     "prisma-dev-migrate": "prisma migrate dev",
     "prisma-migrate": "prisma migrate deploy",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "engines": {
     "node": "21.1.0"
@@ -45,8 +48,12 @@
     "bufferutil": "^4.0.8"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/lru-cache": "^7.10.9",
     "@types/semver": "^7.5.8",
-    "prettier": "3.2.5"
+    "@vitest/coverage-v8": "^4.0.18",
+    "aws-sdk-client-mock": "^4.1.0",
+    "prettier": "3.2.5",
+    "vitest": "^4.0.18"
   }
 }
