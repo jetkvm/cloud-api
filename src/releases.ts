@@ -49,7 +49,7 @@ export function clearCaches() {
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
 
-const DEFAULT_SKU = "jetkvm-1";
+const DEFAULT_SKU = "jetkvm-v2";
 
 /**
  * Checks if an object exists in S3/R2 by attempting a GetObjectCommand.

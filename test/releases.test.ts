@@ -337,7 +337,7 @@ describe("Retrieve handler", () => {
       // Pin versions to bypass rollout; SKU behavior is the only variable here.
       const req = createMockRequest({
         deviceId: "device-123",
-        sku: "jetkvm-1",
+        sku: "jetkvm-v2",
         appVersion: "1.0.0",
         systemVersion: "1.0.0",
       });
@@ -405,14 +405,14 @@ describe("Retrieve handler", () => {
 
       mockS3ListVersions("app", ["2.0.0"]);
       mockS3ListVersions("system", ["2.0.0"]);
-      mockS3SkuVersion("app", "2.0.0", "jetkvm-1", "default-sku-app-hash");
-      mockS3SkuVersion("system", "2.0.0", "jetkvm-1", "default-sku-system-hash");
+      mockS3SkuVersion("app", "2.0.0", "jetkvm-v2", "default-sku-app-hash");
+      mockS3SkuVersion("system", "2.0.0", "jetkvm-v2", "default-sku-system-hash");
 
       await Retrieve(req, res);
 
       expect(res._json.appVersion).toBe("2.0.0");
-      expect(res._json.appUrl).toBe("https://cdn.test.com/app/2.0.0/skus/jetkvm-1/jetkvm_app");
-      expect(res._json.systemUrl).toBe("https://cdn.test.com/system/2.0.0/skus/jetkvm-1/system.tar");
+      expect(res._json.appUrl).toBe("https://cdn.test.com/app/2.0.0/skus/jetkvm-v2/jetkvm_app");
+      expect(res._json.systemUrl).toBe("https://cdn.test.com/system/2.0.0/skus/jetkvm-v2/system.tar");
     });
 
     it("should throw NotFoundError when requested SKU not available on version with SKU support", async () => {
@@ -427,12 +427,12 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("app", ["2.0.0"]);
       mockS3ListVersions("system", ["2.0.0"]);
 
-      // Version has SKU support (jetkvm-1 exists) but jetkvm-3 doesn't
+      // Version has SKU support (jetkvm-v2 exists) but jetkvm-3 doesn't
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/2.0.0/skus/" }).resolves({
-        Contents: [{ Key: "app/2.0.0/skus/jetkvm-1/jetkvm_app" }],
+        Contents: [{ Key: "app/2.0.0/skus/jetkvm-v2/jetkvm_app" }],
       });
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/2.0.0/skus/" }).resolves({
-        Contents: [{ Key: "system/2.0.0/skus/jetkvm-1/system.tar" }],
+        Contents: [{ Key: "system/2.0.0/skus/jetkvm-v2/system.tar" }],
       });
       s3Mock.on(GetObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
         name: "NoSuchKey",
@@ -935,7 +935,7 @@ describe("RetrieveLatestApp handler", () => {
     });
 
     it("should use legacy path when default SKU provided on legacy version", async () => {
-      const req = createMockRequest({ sku: "jetkvm-1" });
+      const req = createMockRequest({ sku: "jetkvm-v2" });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
@@ -1004,13 +1004,13 @@ describe("RetrieveLatestApp handler", () => {
       const crypto = await import("crypto");
       const hash = crypto.createHash("sha256").update(content).digest("hex");
 
-      mockS3SkuVersionWithContent("app", "2.0.0", "jetkvm-1", "jetkvm_app", content, hash);
+      mockS3SkuVersionWithContent("app", "2.0.0", "jetkvm-v2", "jetkvm_app", content, hash);
 
       await RetrieveLatestApp(req, res);
 
       expect(res.redirect).toHaveBeenCalledWith(
         302,
-        "https://cdn.test.com/app/2.0.0/skus/jetkvm-1/jetkvm_app"
+        "https://cdn.test.com/app/2.0.0/skus/jetkvm-v2/jetkvm_app"
       );
     });
 
@@ -1022,9 +1022,9 @@ describe("RetrieveLatestApp handler", () => {
         CommonPrefixes: [{ Prefix: "app/2.0.0/" }],
       });
 
-      // Version has SKU support (jetkvm-1 exists) but jetkvm-3 doesn't
+      // Version has SKU support (jetkvm-v2 exists) but jetkvm-3 doesn't
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/2.0.0/skus/" }).resolves({
-        Contents: [{ Key: "app/2.0.0/skus/jetkvm-1/jetkvm_app" }],
+        Contents: [{ Key: "app/2.0.0/skus/jetkvm-v2/jetkvm_app" }],
       });
       s3Mock.on(GetObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
         name: "NoSuchKey",
@@ -1173,7 +1173,7 @@ describe("RetrieveLatestSystemRecovery handler", () => {
     });
 
     it("should use legacy path when default SKU provided on legacy version", async () => {
-      const req = createMockRequest({ sku: "jetkvm-1" });
+      const req = createMockRequest({ sku: "jetkvm-v2" });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
@@ -1242,13 +1242,13 @@ describe("RetrieveLatestSystemRecovery handler", () => {
       const crypto = await import("crypto");
       const hash = crypto.createHash("sha256").update(content).digest("hex");
 
-      mockS3SkuVersionWithContent("system", "2.0.0", "jetkvm-1", "update.img", content, hash);
+      mockS3SkuVersionWithContent("system", "2.0.0", "jetkvm-v2", "update.img", content, hash);
 
       await RetrieveLatestSystemRecovery(req, res);
 
       expect(res.redirect).toHaveBeenCalledWith(
         302,
-        "https://cdn.test.com/system/2.0.0/skus/jetkvm-1/update.img"
+        "https://cdn.test.com/system/2.0.0/skus/jetkvm-v2/update.img"
       );
     });
 
@@ -1260,9 +1260,9 @@ describe("RetrieveLatestSystemRecovery handler", () => {
         CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
       });
 
-      // Version has SKU support (jetkvm-1 exists) but jetkvm-3 doesn't
+      // Version has SKU support (jetkvm-v2 exists) but jetkvm-3 doesn't
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/2.0.0/skus/" }).resolves({
-        Contents: [{ Key: "system/2.0.0/skus/jetkvm-1/update.img" }],
+        Contents: [{ Key: "system/2.0.0/skus/jetkvm-v2/update.img" }],
       });
       s3Mock.on(GetObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/update.img" }).rejects({
         name: "NoSuchKey",
