@@ -101,13 +101,19 @@ async function versionHasSkuSupport(
  *   - Returns legacy path for default SKU or when no SKU specified
  *   - Fails for non-default SKUs because legacy firmware predates
  *     that hardware and may not be compatible
+ *
+ * @param prefix - The prefix folder ("app" or "system")
+ * @param version - The version string
+ * @param sku - Optional SKU identifier
+ * @param artifactOverride - Optional artifact name override (defaults based on prefix)
  */
 async function resolveArtifactPath(
   prefix: "app" | "system",
   version: string,
   sku: string | undefined,
+  artifactOverride?: string,
 ): Promise<string> {
-  const artifact = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const artifact = artifactOverride ?? (prefix === "app" ? "jetkvm_app" : "system.tar");
 
   if (await versionHasSkuSupport(prefix, version)) {
     const targetSku = sku ?? DEFAULT_SKU;
@@ -408,10 +414,17 @@ function cachedRedirect(
 }
 
 export const RetrieveLatestSystemRecovery = cachedRedirect(
-  (req: Request) =>
-    `system-recovery-${req.query.prerelease === "true" ? "pre" : "stable"}`,
+  (req: Request) => {
+    const skuParam = req.query.sku as string | undefined;
+    const sku = skuParam === "" ? undefined : skuParam;
+    return `system-recovery-${req.query.prerelease === "true" ? "pre" : "stable"}-${sku ?? "default"}`;
+  },
   async (req: Request) => {
     const includePrerelease = req.query.prerelease === "true";
+
+    // Get SKU from query - undefined means use default with legacy fallback
+    const skuParam = req.query.sku as string | undefined;
+    const sku = skuParam === "" ? undefined : skuParam;
 
     // Get the latest system recovery image from S3. It's stored in the system/ folder.
     const listCommand = new ListObjectsV2Command({
@@ -439,18 +452,21 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       throw new NotFoundError("No valid system recovery versions found");
     }
 
+    // Resolve the artifact path with SKU support (using update.img for recovery)
+    const artifactPath = await resolveArtifactPath("system", latestVersion, sku, "update.img");
+
     const [firmwareFile, hashFile] = await Promise.all([
       // TODO: store file hash using custom header to avoid extra request
       s3Client.send(
         new GetObjectCommand({
           Bucket: bucketName,
-          Key: `system/${latestVersion}/update.img`,
+          Key: artifactPath,
         }),
       ),
       s3Client.send(
         new GetObjectCommand({
           Bucket: bucketName,
-          Key: `system/${latestVersion}/update.img.sha256`,
+          Key: `${artifactPath}.sha256`,
         }),
       ),
     ]);
@@ -465,14 +481,22 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
 
     console.log("system recovery image hash matches", latestVersion);
 
-    return `${baseUrl}/system/${latestVersion}/update.img`;
+    return `${baseUrl}/${artifactPath}`;
   },
 );
 
 export const RetrieveLatestApp = cachedRedirect(
-  (req: Request) => `app-${req.query.prerelease === "true" ? "pre" : "stable"}`,
+  (req: Request) => {
+    const skuParam = req.query.sku as string | undefined;
+    const sku = skuParam === "" ? undefined : skuParam;
+    return `app-${req.query.prerelease === "true" ? "pre" : "stable"}-${sku ?? "default"}`;
+  },
   async (req: Request) => {
     const includePrerelease = req.query.prerelease === "true";
+
+    // Get SKU from query - undefined means use default with legacy fallback
+    const skuParam = req.query.sku as string | undefined;
+    const sku = skuParam === "" ? undefined : skuParam;
 
     // Get the latest version
     const listCommand = new ListObjectsV2Command({
@@ -498,18 +522,21 @@ export const RetrieveLatestApp = cachedRedirect(
       throw new NotFoundError("No valid app versions found");
     }
 
+    // Resolve the artifact path with SKU support
+    const artifactPath = await resolveArtifactPath("app", latestVersion, sku);
+
     // Get the app file and its hash
     const [appFile, hashFile] = await Promise.all([
       s3Client.send(
         new GetObjectCommand({
           Bucket: bucketName,
-          Key: `app/${latestVersion}/jetkvm_app`,
+          Key: artifactPath,
         }),
       ),
       s3Client.send(
         new GetObjectCommand({
           Bucket: bucketName,
-          Key: `app/${latestVersion}/jetkvm_app.sha256`,
+          Key: `${artifactPath}.sha256`,
         }),
       ),
     ]);
@@ -521,6 +548,6 @@ export const RetrieveLatestApp = cachedRedirect(
     await verifyHash(appFile, hashFile, "app hash does not match");
 
     console.log("App hash matches", latestVersion);
-    return `${baseUrl}/app/${latestVersion}/jetkvm_app`;
+    return `${baseUrl}/${artifactPath}`;
   },
 );
