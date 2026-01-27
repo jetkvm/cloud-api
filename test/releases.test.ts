@@ -44,6 +44,12 @@ function mockS3ListVersions(prefix: "app" | "system", versions: string[]) {
 // Mock S3 hash file response
 function mockS3HashFile(prefix: "app" | "system", version: string, hash: string) {
   const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const defaultSku = "jetkvm-1";
+  const skuPath = `${prefix}/${version}/skus/${defaultSku}/${fileName}`;
+  s3Mock.on(GetObjectCommand, { Key: skuPath }).rejects({
+    name: "NoSuchKey",
+    $metadata: { httpStatusCode: 404 },
+  });
   s3Mock.on(GetObjectCommand, { Key: `${prefix}/${version}/${fileName}.sha256` }).resolves({
     Body: createAsyncIterable(hash) as any,
   });
