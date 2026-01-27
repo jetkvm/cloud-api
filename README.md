@@ -50,6 +50,9 @@ npx prisma migrate deploy
 
 # Start the production server on port 3000
 npm run dev
+
+# Run tests
+npm test
 ```
 
 ## Production
