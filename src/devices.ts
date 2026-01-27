@@ -40,7 +40,10 @@ export const List = async (req: express.Request, res: express.Response) => {
   }
 };
 
-export const Retrieve = async (req: express.Request, res: express.Response) => {
+export const Retrieve = async (
+  req: express.Request<{ id: string }>,
+  res: express.Response
+) => {
   const idToken = req.session?.id_token;
   const { sub } = jose.decodeJwt(idToken);
   const { id } = req.params;
@@ -55,7 +58,10 @@ export const Retrieve = async (req: express.Request, res: express.Response) => {
   return res.status(200).json({ device });
 };
 
-export const Update = async (req: express.Request, res: express.Response) => {
+export const Update = async (
+  req: express.Request<{ id: string }>,
+  res: express.Response
+) => {
   const idToken = req.session?.id_token;
   const { sub } = jose.decodeJwt(idToken);
   if (!sub) throw new UnauthorizedError("Missing sub in token");
@@ -94,7 +100,10 @@ export const Token = async (req: express.Request, res: express.Response) => {
   return res.json({ secretToken });
 };
 
-export const Delete = async (req: express.Request, res: express.Response) => {
+export const Delete = async (
+  req: express.Request<{ id: string }>,
+  res: express.Response
+) => {
   if (req.headers.authorization?.startsWith("Bearer ")) {
     const secretToken = req.headers.authorization.split("Bearer ")[1];
 
