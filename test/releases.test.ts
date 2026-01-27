@@ -182,6 +182,8 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("system", ["1.0.0", "1.1.0", "2.0.0-alpha.1"]);
       mockS3HashFile("app", "2.0.0-beta.1", "prerelease-app-hash");
       mockS3HashFile("system", "2.0.0-alpha.1", "prerelease-system-hash");
+      await setRollout("2.0.0-beta.1", "app", 0);
+      await setRollout("2.0.0-alpha.1", "system", 0);
 
       await Retrieve(req, res);
 
@@ -205,6 +207,8 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("system", ["3.0.0", "3.1.0-rc.1"]);
       mockS3HashFile("app", "3.1.0-rc.1", "rc-app-hash");
       mockS3HashFile("system", "3.1.0-rc.1", "rc-system-hash");
+      await setRollout("3.1.0-rc.1", "app", 0);
+      await setRollout("3.1.0-rc.1", "system", 0);
 
       await Retrieve(req, res);
 
@@ -257,6 +261,8 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("system", ["1.0.0", "2.0.0"]);
       mockS3HashFile("app", "1.0.0", "app-hash-100");
       mockS3HashFile("system", "1.0.0", "system-hash-100");
+      await setRollout("1.0.0", "app", 0);
+      await setRollout("1.0.0", "system", 0);
 
       await Retrieve(req, res);
 
@@ -320,7 +326,6 @@ describe("Retrieve handler", () => {
     });
 
     it("should use SKU path when version has SKU support", async () => {
-      // Use version constraints to skip rollout logic
       const req = createMockRequest({
         deviceId: "device-123",
         sku: "jetkvm-2",
@@ -342,7 +347,6 @@ describe("Retrieve handler", () => {
     });
 
     it("should use default SKU when no SKU provided on version with SKU support", async () => {
-      // Use version constraints to skip rollout logic
       const req = createMockRequest({
         deviceId: "device-123",
         appVersion: "^2.0.0",
