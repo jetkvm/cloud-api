@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://jetkvm:jetkvm@localhost:5432/jetkvm?schema=public
     services:
       postgres:
         image: postgres:16
