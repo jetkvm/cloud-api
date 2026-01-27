@@ -69,31 +69,72 @@ async function s3ObjectExists(key: string): Promise<boolean> {
 }
 
 /**
- * Resolves the artifact path for a given version and SKU.
- * Tries SKU-specific path first, falls back to legacy path for older versions.
+ * Checks if a version was uploaded with SKU folder structure.
+ * Returns true if any skus/ subfolder exists for this version.
+ */
+async function versionHasSkuSupport(
+  prefix: "app" | "system",
+  version: string,
+): Promise<boolean> {
+  const response = await s3Client.send(
+    new ListObjectsV2Command({
+      Bucket: bucketName,
+      Prefix: `${prefix}/${version}/skus/`,
+      MaxKeys: 1,
+    }),
+  );
+  return (response.Contents?.length ?? 0) > 0;
+}
+
+/**
+ * Resolves the artifact path for a given version and optional SKU.
+ *
+ * For versions with SKU support (skus/ folder exists):
+ *   - Uses the provided SKU, or defaults to DEFAULT_SKU
+ *   - Fails if the requested SKU is not available
+ *
+ * For legacy versions (no skus/ folder):
+ *   - Returns legacy path for default SKU or when no SKU specified
+ *   - Fails for non-default SKUs because legacy firmware predates
+ *     that hardware and may not be compatible
  */
 async function resolveArtifactPath(
   prefix: "app" | "system",
   version: string,
-  sku: string,
+  sku: string | undefined,
 ): Promise<string> {
   const artifact = prefix === "app" ? "jetkvm_app" : "system.tar";
-  const skuPath = `${prefix}/${version}/skus/${sku}/${artifact}`;
-  if (await s3ObjectExists(skuPath)) {
-    return skuPath;
+
+  if (await versionHasSkuSupport(prefix, version)) {
+    const targetSku = sku ?? DEFAULT_SKU;
+    const skuPath = `${prefix}/${version}/skus/${targetSku}/${artifact}`;
+
+    if (await s3ObjectExists(skuPath)) {
+      return skuPath;
+    }
+
+    throw new NotFoundError(
+      `SKU "${targetSku}" is not available for version ${version}`,
+    );
   }
 
-  // Legacy path for versions uploaded before SKU support
-  return `${prefix}/${version}/${artifact}`;
+  // Legacy version - only default SKU (or unspecified) is allowed
+  if (sku === undefined || sku === DEFAULT_SKU) {
+    return `${prefix}/${version}/${artifact}`;
+  }
+
+  throw new NotFoundError(
+    `Version ${version} predates SKU support and cannot serve SKU "${sku}"`,
+  );
 }
 
 async function getLatestVersion(
   prefix: "app" | "system",
   includePrerelease: boolean,
   maxSatisfying: string = "*",
-  sku: string = DEFAULT_SKU,
+  sku?: string,
 ): Promise<ReleaseMetadata> {
-  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
+  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku ?? "default"}`;
   const cached = releaseCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -210,17 +251,22 @@ async function getReleaseFromS3(
   return toRelease(appRelease, systemRelease);
 }
 
+/**
+ * Computes a deterministic rollout bucket (0-99) for a device ID.
+ * Used to decide if a device is eligible for a staged rollout.
+ */
+export function getDeviceRolloutBucket(deviceId: string): number {
+  const hash = createHash("md5").update(deviceId).digest("hex");
+  const hashPrefix = hash.substring(0, 8);
+  return parseInt(hashPrefix, 16) % 100;
+}
+
 async function isDeviceEligibleForLatestRelease(
   rolloutPercentage: number,
   deviceId: string,
 ): Promise<boolean> {
   if (rolloutPercentage === 100) return true;
-
-  const hash = createHash("md5").update(deviceId).digest("hex");
-  const hashPrefix = hash.substring(0, 8);
-  const hashValue = parseInt(hashPrefix, 16) % 100;
-
-  return hashValue < rolloutPercentage;
+  return getDeviceRolloutBucket(deviceId) < rolloutPercentage;
 }
 
 async function getDefaultRelease(type: "app" | "system") {
@@ -262,8 +308,9 @@ export async function Retrieve(req: Request, res: Response) {
   const systemVersion = toSemverRange(req.query.systemVersion as string | undefined);
   const skipRollout = appVersion !== "*" || systemVersion !== "*";
 
-  // Get SKU from query, default to jetkvm-1 for legacy devices
-  const sku = (req.query.sku as string | undefined) || DEFAULT_SKU;
+  // Get SKU from query - undefined means use default with legacy fallback
+  const skuParam = req.query.sku as string | undefined;
+  const sku = skuParam === "" ? undefined : skuParam;
 
   // Get the latest release from S3
   let remoteRelease: Release;
