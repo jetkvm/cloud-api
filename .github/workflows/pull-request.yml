@@ -9,6 +9,20 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jetkvm
+          POSTGRES_PASSWORD: jetkvm
+          POSTGRES_DB: jetkvm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jetkvm -d jetkvm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
     - uses: actions/checkout@v4
 
@@ -34,6 +48,9 @@ jobs:
         npm run build
       env:
         CI: true
+
+    - name: Run Prisma Migrations
+      run: npx prisma migrate deploy
 
     - name: Run Tests
       run: npm test
