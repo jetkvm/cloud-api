@@ -279,7 +279,12 @@ describe("Retrieve handler", () => {
 
   describe("SKU handling", () => {
     it("should use legacy path when no SKU provided on legacy version", async () => {
-      const req = createMockRequest({ deviceId: "device-123" });
+      // Pin versions to bypass rollout; SKU behavior is the only variable here.
+      const req = createMockRequest({
+        deviceId: "device-123",
+        appVersion: "1.0.0",
+        systemVersion: "1.0.0",
+      });
       const res = createMockResponse();
 
       mockS3ListVersions("app", ["1.0.0"]);
@@ -295,7 +300,13 @@ describe("Retrieve handler", () => {
     });
 
     it("should use legacy path when default SKU provided on legacy version", async () => {
-      const req = createMockRequest({ deviceId: "device-123", sku: "jetkvm-1" });
+      // Pin versions to bypass rollout; SKU behavior is the only variable here.
+      const req = createMockRequest({
+        deviceId: "device-123",
+        sku: "jetkvm-1",
+        appVersion: "1.0.0",
+        systemVersion: "1.0.0",
+      });
       const res = createMockResponse();
 
       mockS3ListVersions("app", ["1.0.0"]);
@@ -311,7 +322,13 @@ describe("Retrieve handler", () => {
     });
 
     it("should throw NotFoundError when non-default SKU requested on legacy version", async () => {
-      const req = createMockRequest({ deviceId: "device-123", sku: "jetkvm-2" });
+      // Pin versions to bypass rollout; SKU behavior is the only variable here.
+      const req = createMockRequest({
+        deviceId: "device-123",
+        sku: "jetkvm-2",
+        appVersion: "1.0.0",
+        systemVersion: "1.0.0",
+      });
       const res = createMockResponse();
 
       mockS3ListVersions("app", ["1.0.0"]);
