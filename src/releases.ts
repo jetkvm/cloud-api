@@ -5,9 +5,9 @@ import { createHash } from "crypto";
 import semver from "semver";
 
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
-import { LRUCache } from 'lru-cache';
+import { LRUCache } from "lru-cache";
 
-import { streamToString, streamToBuffer, toSemverRange, verifyHash } from "./helpers";
+import { streamToString, toSemverRange, verifyHash } from "./helpers";
 
 export interface ReleaseMetadata {
   version: string;
@@ -45,12 +45,55 @@ export function clearCaches() {
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
 
+const DEFAULT_SKU = "jetkvm-1";
+
+/**
+ * Checks if an object exists in S3/R2 by attempting a GetObjectCommand.
+ * Returns true if the object exists, false otherwise.
+ */
+async function s3ObjectExists(key: string): Promise<boolean> {
+  try {
+    await s3Client.send(
+      new GetObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+      }),
+    );
+    return true;
+  } catch (error: any) {
+    if (error.name === "NoSuchKey" || error.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+/**
+ * Resolves the artifact path for a given version and SKU.
+ * Tries SKU-specific path first, falls back to legacy path for older versions.
+ */
+async function resolveArtifactPath(
+  prefix: "app" | "system",
+  version: string,
+  sku: string,
+): Promise<string> {
+  const artifact = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const skuPath = `${prefix}/${version}/skus/${sku}/${artifact}`;
+  if (await s3ObjectExists(skuPath)) {
+    return skuPath;
+  }
+
+  // Legacy path for versions uploaded before SKU support
+  return `${prefix}/${version}/${artifact}`;
+}
+
 async function getLatestVersion(
   prefix: "app" | "system",
   includePrerelease: boolean,
   maxSatisfying: string = "*",
+  sku: string = DEFAULT_SKU,
 ): Promise<ReleaseMetadata> {
-  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}`;
+  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
   const cached = releaseCache.get(cacheKey);
   if (cached) {
     return cached;
@@ -82,16 +125,18 @@ async function getLatestVersion(
     includePrerelease,
   }) as string;
   if (!latestVersion) {
-    throw new NotFoundError(`No version found under prefix ${prefix} that satisfies ${maxSatisfying}`);
+    throw new NotFoundError(
+      `No version found under prefix ${prefix} that satisfies ${maxSatisfying}`,
+    );
   }
 
-  const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
-  const url = `${baseUrl}/${prefix}/${latestVersion}/${fileName}`;
+  const selectedPath = await resolveArtifactPath(prefix, latestVersion, sku);
+  const url = `${baseUrl}/${selectedPath}`;
 
   const hashResponse = await s3Client.send(
     new GetObjectCommand({
       Bucket: bucketName,
-      Key: `${prefix}/${latestVersion}/${fileName}.sha256`,
+      Key: `${selectedPath}.sha256`,
     }),
   );
 
@@ -139,7 +184,10 @@ function setSystemRelease(release: Release, systemRelease: ReleaseMetadata) {
   release.systemMaxSatisfying = systemRelease._maxSatisfying;
 }
 
-function toRelease(appRelease?: ReleaseMetadata, systemRelease?: ReleaseMetadata): Release {
+function toRelease(
+  appRelease?: ReleaseMetadata,
+  systemRelease?: ReleaseMetadata,
+): Release {
   const release: Partial<Release> = {};
   if (appRelease) setAppRelease(release as Release, appRelease);
   if (systemRelease) setSystemRelease(release as Release, systemRelease);
@@ -148,11 +196,15 @@ function toRelease(appRelease?: ReleaseMetadata, systemRelease?: ReleaseMetadata
 
 async function getReleaseFromS3(
   includePrerelease: boolean,
-  { appVersion, systemVersion }: { appVersion?: string; systemVersion?: string },
+  {
+    appVersion,
+    systemVersion,
+    sku,
+  }: { appVersion?: string; systemVersion?: string; sku?: string },
 ): Promise<Release> {
   const [appRelease, systemRelease] = await Promise.all([
-    getLatestVersion("app", includePrerelease, appVersion),
-    getLatestVersion("system", includePrerelease, systemVersion),
+    getLatestVersion("app", includePrerelease, appVersion, sku),
+    getLatestVersion("system", includePrerelease, systemVersion, sku),
   ]);
 
   return toRelease(appRelease, systemRelease);
@@ -210,10 +262,17 @@ export async function Retrieve(req: Request, res: Response) {
   const systemVersion = toSemverRange(req.query.systemVersion as string | undefined);
   const skipRollout = appVersion !== "*" || systemVersion !== "*";
 
+  // Get SKU from query, default to jetkvm-1 for legacy devices
+  const sku = (req.query.sku as string | undefined) || DEFAULT_SKU;
+
   // Get the latest release from S3
   let remoteRelease: Release;
   try {
-    remoteRelease = await getReleaseFromS3(includePrerelease, { appVersion, systemVersion });
+    remoteRelease = await getReleaseFromS3(includePrerelease, {
+      appVersion,
+      systemVersion,
+      sku,
+    });
   } catch (error) {
     console.error(error);
     if (error instanceof NotFoundError) {
@@ -266,9 +325,7 @@ export async function Retrieve(req: Request, res: Response) {
   */
   const forceUpdate = req.query.forceUpdate === "true";
   if (forceUpdate) {
-    return res.json(
-      toRelease(latestAppRelease, latestSystemRelease),
-    );
+    return res.json(toRelease(latestAppRelease, latestSystemRelease));
   }
 
   const defaultAppRelease = await getDefaultRelease("app");
@@ -294,7 +351,10 @@ export async function Retrieve(req: Request, res: Response) {
   return res.json(responseJson);
 }
 
-function cachedRedirect(cachedKey: (req: Request) => string, callback: (req: Request) => Promise<string>) {
+function cachedRedirect(
+  cachedKey: (req: Request) => string,
+  callback: (req: Request) => Promise<string>,
+) {
   return async (req: Request, res: Response) => {
     const cacheKey = cachedKey(req);
     let result = redirectCache.get(cacheKey);
@@ -307,7 +367,8 @@ function cachedRedirect(cachedKey: (req: Request) => string, callback: (req: Req
 }
 
 export const RetrieveLatestSystemRecovery = cachedRedirect(
-  (req: Request) => `system-recovery-${req.query.prerelease === "true" ? "pre" : "stable"}`,
+  (req: Request) =>
+    `system-recovery-${req.query.prerelease === "true" ? "pre" : "stable"}`,
   async (req: Request) => {
     const includePrerelease = req.query.prerelease === "true";
 
@@ -384,8 +445,8 @@ export const RetrieveLatestApp = cachedRedirect(
       throw new NotFoundError("No app versions found");
     }
 
-    const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(v =>
-      semver.valid(v),
+    const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(
+      v => semver.valid(v),
     );
 
     const latestVersion = semver.maxSatisfying(versions, "*", {
@@ -420,4 +481,5 @@ export const RetrieveLatestApp = cachedRedirect(
 
     console.log("App hash matches", latestVersion);
     return `${baseUrl}/app/${latestVersion}/jetkvm_app`;
-  });
+  },
+);
