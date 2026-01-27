@@ -16,7 +16,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "engines": {
-    "node": "21.1.0"
+    "node": "22.21.0"
   },
   "keywords": [],
   "author": "JetKVM",
