@@ -85,21 +85,6 @@ function mockS3SkuVersion(
   });
 }
 
-// Mock S3 file and hash for redirect endpoints
-function mockS3FileWithHash(
-  prefix: "app" | "system",
-  version: string,
-  fileName: string,
-  content: string,
-  hash: string
-) {
-  s3Mock.on(GetObjectCommand, { Key: `${prefix}/${version}/${fileName}` }).resolves({
-    Body: createAsyncIterable(content) as any,
-  });
-  s3Mock.on(GetObjectCommand, { Key: `${prefix}/${version}/${fileName}.sha256` }).resolves({
-    Body: createAsyncIterable(hash) as any,
-  });
-}
 
 // Mock S3 for legacy version with file content (for redirect endpoints with hash verification)
 function mockS3LegacyVersionWithContent(
@@ -427,6 +412,7 @@ describe("Retrieve handler", () => {
 
       expect(res._json.appVersion).toBe("2.0.0");
       expect(res._json.appUrl).toBe("https://cdn.test.com/app/2.0.0/skus/jetkvm-1/jetkvm_app");
+      expect(res._json.systemUrl).toBe("https://cdn.test.com/system/2.0.0/skus/jetkvm-1/system.tar");
     });
 
     it("should throw NotFoundError when requested SKU not available on version with SKU support", async () => {
