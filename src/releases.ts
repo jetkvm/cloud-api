@@ -1,13 +1,17 @@
 import { Request, Response } from "express";
 import { prisma } from "./db";
 import { BadRequestError, InternalServerError, NotFoundError } from "./errors";
-import { createHash } from "crypto";
 import semver from "semver";
 
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import { LRUCache } from "lru-cache";
 
-import { streamToString, toSemverRange, verifyHash } from "./helpers";
+import {
+  getDeviceRolloutBucket,
+  streamToString,
+  toSemverRange,
+  verifyHash,
+} from "./helpers";
 
 export interface ReleaseMetadata {
   version: string;
@@ -249,16 +253,6 @@ async function getReleaseFromS3(
   ]);
 
   return toRelease(appRelease, systemRelease);
-}
-
-/**
- * Computes a deterministic rollout bucket (0-99) for a device ID.
- * Used to decide if a device is eligible for a staged rollout.
- */
-export function getDeviceRolloutBucket(deviceId: string): number {
-  const hash = createHash("md5").update(deviceId).digest("hex");
-  const hashPrefix = hash.substring(0, 8);
-  return parseInt(hashPrefix, 16) % 100;
 }
 
 async function isDeviceEligibleForLatestRelease(

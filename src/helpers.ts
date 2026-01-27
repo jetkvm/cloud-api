@@ -32,7 +32,9 @@ export async function verifyHash(
 ): Promise<boolean> {
   const content = await streamToBuffer(file.Body);
   const remoteHash = await streamToString(hashFile.Body);
-  const localHash = createHash("sha256").update(content).digest("hex");
+  const localHash = createHash("sha256")
+    .update(new Uint8Array(content))
+    .digest("hex");
 
   const matches = remoteHash.trim() === localHash;
   if (!matches && exception) {
@@ -44,4 +46,14 @@ export async function verifyHash(
 export function toSemverRange(range?: string) {
   if (!range) return "*";
   return validRange(range) || "*";
+}
+
+/**
+ * Computes a deterministic rollout bucket (0-99) for a device ID.
+ * Used to decide if a device is eligible for a staged rollout.
+ */
+export function getDeviceRolloutBucket(deviceId: string): number {
+  const hash = createHash("md5").update(deviceId).digest("hex");
+  const hashPrefix = hash.substring(0, 8);
+  return parseInt(hashPrefix, 16) % 100;
 }

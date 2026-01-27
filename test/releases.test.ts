@@ -10,8 +10,8 @@ import {
   RetrieveLatestApp,
   RetrieveLatestSystemRecovery,
   clearCaches,
-  getDeviceRolloutBucket,
 } from "../src/releases";
+import { getDeviceRolloutBucket } from "../src/helpers";
 
 // Helper to create mock Request
 function createMockRequest(query: Record<string, string | undefined> = {}): Request {
@@ -182,8 +182,6 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("system", ["1.0.0", "1.1.0", "2.0.0-alpha.1"]);
       mockS3HashFile("app", "2.0.0-beta.1", "prerelease-app-hash");
       mockS3HashFile("system", "2.0.0-alpha.1", "prerelease-system-hash");
-      await setRollout("2.0.0-beta.1", "app", 0);
-      await setRollout("2.0.0-alpha.1", "system", 0);
 
       await Retrieve(req, res);
 
@@ -207,8 +205,6 @@ describe("Retrieve handler", () => {
       mockS3ListVersions("system", ["3.0.0", "3.1.0-rc.1"]);
       mockS3HashFile("app", "3.1.0-rc.1", "rc-app-hash");
       mockS3HashFile("system", "3.1.0-rc.1", "rc-system-hash");
-      await setRollout("3.1.0-rc.1", "app", 0);
-      await setRollout("3.1.0-rc.1", "system", 0);
 
       await Retrieve(req, res);
 
@@ -295,6 +291,7 @@ describe("Retrieve handler", () => {
 
       expect(res._json.appVersion).toBe("1.0.0");
       expect(res._json.appUrl).toBe("https://cdn.test.com/app/1.0.0/jetkvm_app");
+      expect(res._json.systemUrl).toBe("https://cdn.test.com/system/1.0.0/system.tar");
     });
 
     it("should use legacy path when default SKU provided on legacy version", async () => {
@@ -310,6 +307,7 @@ describe("Retrieve handler", () => {
 
       expect(res._json.appVersion).toBe("1.0.0");
       expect(res._json.appUrl).toBe("https://cdn.test.com/app/1.0.0/jetkvm_app");
+      expect(res._json.systemUrl).toBe("https://cdn.test.com/system/1.0.0/system.tar");
     });
 
     it("should throw NotFoundError when non-default SKU requested on legacy version", async () => {
