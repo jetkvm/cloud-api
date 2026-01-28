@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { Request, Response } from "express";
-import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { s3Mock, createAsyncIterable, testPrisma, seedReleases, setRollout, resetToSeedData } from "./setup";
 import { BadRequestError, NotFoundError, InternalServerError } from "../src/errors";
 
@@ -76,8 +76,8 @@ function mockS3SkuVersion(
     Contents: [{ Key: skuPath }],
   });
 
-  // Mock SKU artifact exists
-  s3Mock.on(GetObjectCommand, { Key: skuPath }).resolves({});
+  // Mock SKU artifact exists (HeadObjectCommand for existence check)
+  s3Mock.on(HeadObjectCommand, { Key: skuPath }).resolves({});
 
   // Mock SKU hash path
   s3Mock.on(GetObjectCommand, { Key: `${skuPath}.sha256` }).resolves({
@@ -124,7 +124,10 @@ function mockS3SkuVersionWithContent(
     Contents: [{ Key: skuPath }],
   });
 
-  // Mock SKU artifact exists with content
+  // Mock SKU artifact exists (HeadObjectCommand for existence check)
+  s3Mock.on(HeadObjectCommand, { Key: skuPath }).resolves({});
+
+  // Mock SKU artifact with content (GetObjectCommand for actual fetch)
   s3Mock.on(GetObjectCommand, { Key: skuPath }).resolves({
     Body: createAsyncIterable(content) as any,
   });
@@ -434,11 +437,11 @@ describe("Retrieve handler", () => {
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/2.0.0/skus/" }).resolves({
         Contents: [{ Key: "system/2.0.0/skus/jetkvm-v2/system.tar" }],
       });
-      s3Mock.on(GetObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
+      s3Mock.on(HeadObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
         name: "NoSuchKey",
         $metadata: { httpStatusCode: 404 },
       });
-      s3Mock.on(GetObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/system.tar" }).rejects({
+      s3Mock.on(HeadObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/system.tar" }).rejects({
         name: "NoSuchKey",
         $metadata: { httpStatusCode: 404 },
       });
@@ -1026,7 +1029,7 @@ describe("RetrieveLatestApp handler", () => {
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/2.0.0/skus/" }).resolves({
         Contents: [{ Key: "app/2.0.0/skus/jetkvm-v2/jetkvm_app" }],
       });
-      s3Mock.on(GetObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
+      s3Mock.on(HeadObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" }).rejects({
         name: "NoSuchKey",
         $metadata: { httpStatusCode: 404 },
       });
@@ -1264,7 +1267,7 @@ describe("RetrieveLatestSystemRecovery handler", () => {
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/2.0.0/skus/" }).resolves({
         Contents: [{ Key: "system/2.0.0/skus/jetkvm-v2/update.img" }],
       });
-      s3Mock.on(GetObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/update.img" }).rejects({
+      s3Mock.on(HeadObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/update.img" }).rejects({
         name: "NoSuchKey",
         $metadata: { httpStatusCode: 404 },
       });
