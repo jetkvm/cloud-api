@@ -19,17 +19,32 @@ import {
 } from "./helpers";
 import { z, ZodError } from "zod";
 
+const DEFAULT_SKU = "jetkvm-v2";
+
 /** Query param schema builders for common patterns */
-const queryString = () => z.string().optional().transform(v => v || undefined);
-const queryBoolean = () => z.string().optional().transform(v => v === "true");
+const queryString = () =>
+  z
+    .string()
+    .optional()
+    .transform(v => v || undefined);
+const queryBoolean = () =>
+  z
+    .string()
+    .optional()
+    .transform(v => v === "true");
+const querySku = () =>
+  z
+    .string()
+    .optional()
+    .transform(v => v || DEFAULT_SKU);
 
 /**
  * Schema for redirect endpoints (RetrieveLatestApp, RetrieveLatestSystemRecovery).
- * Only needs prerelease flag and optional SKU.
+ * Only needs prerelease flag and SKU (defaults to jetkvm-v2).
  */
 const latestQuerySchema = z.object({
   prerelease: queryBoolean(),
-  sku: queryString(),
+  sku: querySku(),
 });
 
 type LatestQuery = z.infer<typeof latestQuerySchema>;
@@ -43,7 +58,7 @@ const retrieveQuerySchema = z.object({
   prerelease: queryBoolean(),
   appVersion: queryString(),
   systemVersion: queryString(),
-  sku: queryString(),
+  sku: querySku(),
   forceUpdate: queryBoolean(),
 });
 
@@ -100,24 +115,21 @@ export function clearCaches() {
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
 
-const DEFAULT_SKU = "jetkvm-v2";
-
 /**
  * Checks if an object exists in S3/R2 by attempting a HeadObjectCommand.
  * Returns true if the object exists, false otherwise.
  */
 async function s3ObjectExists(key: string): Promise<boolean> {
   try {
-    await s3Client.send(
-      new HeadObjectCommand({
-        Bucket: bucketName,
-        Key: key,
-      }),
-    );
+    await s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
     return true;
   } catch (error: any) {
     // HeadObjectCommand throws NotFound, but some S3-compatible stores (like R2) may throw NoSuchKey
-    if (error.name === "NotFound" || error.name === "NoSuchKey" || error.$metadata?.httpStatusCode === 404) {
+    if (
+      error.name === "NotFound" ||
+      error.name === "NoSuchKey" ||
+      error.$metadata?.httpStatusCode === 404
+    ) {
       return false;
     }
     throw error;
@@ -143,45 +155,46 @@ async function versionHasSkuSupport(
 }
 
 /**
- * Resolves the artifact path for a given version and optional SKU.
+ * Resolves the artifact path for a given version and SKU.
  *
  * For versions with SKU support (skus/ folder exists):
- *   - Uses the provided SKU, or defaults to DEFAULT_SKU
+ *   - Uses the provided SKU
  *   - Fails if the requested SKU is not available
  *
  * For legacy versions (no skus/ folder):
- *   - Returns legacy path for default SKU or when no SKU specified
+ *   - Returns legacy path for default SKU
  *   - Fails for non-default SKUs because legacy firmware predates
  *     that hardware and may not be compatible
  *
  * @param prefix - The prefix folder ("app" or "system")
  * @param version - The version string
- * @param sku - Optional SKU identifier
+ * @param sku - SKU identifier (defaults to jetkvm-v2 from schema)
  * @param artifactOverride - Optional artifact name override (defaults based on prefix)
  */
 async function resolveArtifactPath(
   prefix: "app" | "system",
   version: string,
-  sku: string | undefined,
+  sku: string,
   artifactOverride?: string,
 ): Promise<string> {
   const artifact = artifactOverride ?? (prefix === "app" ? "jetkvm_app" : "system.tar");
 
   if (await versionHasSkuSupport(prefix, version)) {
-    const targetSku = sku ?? DEFAULT_SKU;
-    const skuPath = `${prefix}/${version}/skus/${targetSku}/${artifact}`;
+    const skuPath = `${prefix}/${version}/skus/${sku}/${artifact}`;
 
     if (await s3ObjectExists(skuPath)) {
       return skuPath;
     }
 
-    throw new NotFoundError(
-      `SKU "${targetSku}" is not available for version ${version}`,
-    );
+    throw new NotFoundError(`SKU "${sku}" is not available for version ${version}`);
   }
 
-  // Legacy version - only default SKU (or unspecified) is allowed
-  if (sku === undefined || sku === DEFAULT_SKU) {
+  // SKU defaults to "jetkvm-v2" via zod schema when not provided.
+  //
+  // For legacy versions (pre-SKU folder structure), we only serve the default SKU.
+  // This prevents newer hardware variants from rolling back to old firmware
+  // that may not have compatible binaries for their hardware.
+  if (sku === DEFAULT_SKU) {
     return `${prefix}/${version}/${artifact}`;
   }
 
@@ -194,13 +207,11 @@ async function getLatestVersion(
   prefix: "app" | "system",
   includePrerelease: boolean,
   maxSatisfying: string = "*",
-  sku?: string,
+  sku: string,
 ): Promise<ReleaseMetadata> {
-  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku ?? "default"}`;
+  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
   const cached = releaseCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
+  if (cached) return cached;
 
   const listCommand = new ListObjectsV2Command({
     Bucket: bucketName,
@@ -303,7 +314,7 @@ async function getReleaseFromS3(
     appVersion,
     systemVersion,
     sku,
-  }: { appVersion?: string; systemVersion?: string; sku?: string },
+  }: { appVersion?: string; systemVersion?: string; sku: string },
 ): Promise<Release> {
   const [appRelease, systemRelease] = await Promise.all([
     getLatestVersion("app", includePrerelease, appVersion, sku),
@@ -422,7 +433,10 @@ export async function Retrieve(req: Request, res: Response) {
   const responseJson = toRelease(defaultAppRelease, defaultSystemRelease);
 
   if (
-    await isDeviceEligibleForLatestRelease(latestAppRelease.rolloutPercentage, query.deviceId)
+    await isDeviceEligibleForLatestRelease(
+      latestAppRelease.rolloutPercentage,
+      query.deviceId,
+    )
   ) {
     setAppRelease(responseJson, latestAppRelease);
   }
@@ -459,12 +473,12 @@ function cachedRedirect(
  * Generates a cache key for release endpoints based on prefix, prerelease flag, and SKU.
  */
 function releaseCacheKey(prefix: string, query: LatestQuery): string {
-  return `${prefix}-${query.prerelease ? "pre" : "stable"}-${query.sku ?? "default"}`;
+  return `${prefix}-${query.prerelease ? "pre" : "stable"}-${query.sku}`;
 }
 
 export const RetrieveLatestSystemRecovery = cachedRedirect(
-  (query) => releaseCacheKey("system-recovery", query),
-  async (query) => {
+  query => releaseCacheKey("system-recovery", query),
+  async query => {
     // Get the latest system recovery image from S3. It's stored in the system/ folder.
     const listCommand = new ListObjectsV2Command({
       Bucket: bucketName,
@@ -492,7 +506,12 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
     }
 
     // Resolve the artifact path with SKU support (using update.img for recovery)
-    const artifactPath = await resolveArtifactPath("system", latestVersion, query.sku, "update.img");
+    const artifactPath = await resolveArtifactPath(
+      "system",
+      latestVersion,
+      query.sku,
+      "update.img",
+    );
 
     const [firmwareFile, hashFile] = await Promise.all([
       // TODO: store file hash using custom header to avoid extra request
@@ -525,8 +544,8 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
 );
 
 export const RetrieveLatestApp = cachedRedirect(
-  (query) => releaseCacheKey("app", query),
-  async (query) => {
+  query => releaseCacheKey("app", query),
+  async query => {
     // Get the latest version
     const listCommand = new ListObjectsV2Command({
       Bucket: bucketName,
