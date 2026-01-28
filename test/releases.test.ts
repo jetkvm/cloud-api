@@ -1038,6 +1038,72 @@ describe("RetrieveLatestApp handler", () => {
       await expect(RetrieveLatestApp(req, res)).rejects.toThrow("is not available for version");
     });
   });
+
+  describe("cache behavior", () => {
+    it("should return cached redirect on second call with same parameters", async () => {
+      const req1 = createMockRequest({});
+      const res1 = createMockResponse();
+
+      s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
+        CommonPrefixes: [{ Prefix: "app/1.0.0/" }],
+      });
+
+      const content = "cached-app-content";
+      const crypto = await import("crypto");
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+      mockS3LegacyVersionWithContent("app", "1.0.0", "jetkvm_app", content, hash);
+
+      await RetrieveLatestApp(req1, res1);
+      expect(res1._redirectUrl).toBe("https://cdn.test.com/app/1.0.0/jetkvm_app");
+
+      // Reset S3 mock to return different data
+      s3Mock.reset();
+      s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
+        CommonPrefixes: [{ Prefix: "app/2.0.0/" }],
+      });
+      mockS3LegacyVersionWithContent("app", "2.0.0", "jetkvm_app", "new-content", "new-hash");
+
+      // Second call should return cached result (1.0.0), not new S3 data (2.0.0)
+      const req2 = createMockRequest({});
+      const res2 = createMockResponse();
+
+      await RetrieveLatestApp(req2, res2);
+      expect(res2._redirectUrl).toBe("https://cdn.test.com/app/1.0.0/jetkvm_app");
+    });
+
+    it("should use different cache keys for different SKUs", async () => {
+      // First call with default SKU
+      const req1 = createMockRequest({});
+      const res1 = createMockResponse();
+
+      s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
+        CommonPrefixes: [{ Prefix: "app/1.0.0/" }],
+      });
+
+      const content = "sku-cache-test";
+      const crypto = await import("crypto");
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+      mockS3LegacyVersionWithContent("app", "1.0.0", "jetkvm_app", content, hash);
+
+      await RetrieveLatestApp(req1, res1);
+      expect(res1._redirectUrl).toBe("https://cdn.test.com/app/1.0.0/jetkvm_app");
+
+      // Second call with different SKU should NOT use cached result
+      s3Mock.reset();
+      s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
+        CommonPrefixes: [{ Prefix: "app/2.0.0/" }],
+      });
+      mockS3SkuVersionWithContent("app", "2.0.0", "jetkvm-2", "jetkvm_app", content, hash);
+
+      const req2 = createMockRequest({ sku: "jetkvm-2" });
+      const res2 = createMockResponse();
+
+      await RetrieveLatestApp(req2, res2);
+      expect(res2._redirectUrl).toBe("https://cdn.test.com/app/2.0.0/skus/jetkvm-2/jetkvm_app");
+    });
+  });
 });
 
 describe("RetrieveLatestSystemRecovery handler", () => {
@@ -1274,6 +1340,72 @@ describe("RetrieveLatestSystemRecovery handler", () => {
 
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(NotFoundError);
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow("is not available for version");
+    });
+  });
+
+  describe("cache behavior", () => {
+    it("should return cached redirect on second call with same parameters", async () => {
+      const req1 = createMockRequest({});
+      const res1 = createMockResponse();
+
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/1.0.0/" }],
+      });
+
+      const content = "cached-system-recovery-content";
+      const crypto = await import("crypto");
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+      mockS3LegacyVersionWithContent("system", "1.0.0", "update.img", content, hash);
+
+      await RetrieveLatestSystemRecovery(req1, res1);
+      expect(res1._redirectUrl).toBe("https://cdn.test.com/system/1.0.0/update.img");
+
+      // Reset S3 mock to return different data
+      s3Mock.reset();
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
+      });
+      mockS3LegacyVersionWithContent("system", "2.0.0", "update.img", "new-content", "new-hash");
+
+      // Second call should return cached result (1.0.0), not new S3 data (2.0.0)
+      const req2 = createMockRequest({});
+      const res2 = createMockResponse();
+
+      await RetrieveLatestSystemRecovery(req2, res2);
+      expect(res2._redirectUrl).toBe("https://cdn.test.com/system/1.0.0/update.img");
+    });
+
+    it("should use different cache keys for different SKUs", async () => {
+      // First call with default SKU
+      const req1 = createMockRequest({});
+      const res1 = createMockResponse();
+
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/1.0.0/" }],
+      });
+
+      const content = "sku-cache-test-recovery";
+      const crypto = await import("crypto");
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+
+      mockS3LegacyVersionWithContent("system", "1.0.0", "update.img", content, hash);
+
+      await RetrieveLatestSystemRecovery(req1, res1);
+      expect(res1._redirectUrl).toBe("https://cdn.test.com/system/1.0.0/update.img");
+
+      // Second call with different SKU should NOT use cached result
+      s3Mock.reset();
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
+      });
+      mockS3SkuVersionWithContent("system", "2.0.0", "jetkvm-2", "update.img", content, hash);
+
+      const req2 = createMockRequest({ sku: "jetkvm-2" });
+      const res2 = createMockResponse();
+
+      await RetrieveLatestSystemRecovery(req2, res2);
+      expect(res2._redirectUrl).toBe("https://cdn.test.com/system/2.0.0/skus/jetkvm-2/update.img");
     });
   });
 });
