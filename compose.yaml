@@ -7,7 +7,7 @@ networks:
 services:
   db:
     image: postgres
-    restart: always
+    restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: jetkvm
       POSTGRES_USER: jetkvm
@@ -25,26 +25,34 @@ services:
     volumes:
       - postgresql:/var/lib/postgresql
 
-  app: &app
+  # Run database migrations before starting the apps
+  app-migrate:
     build: .
     environment:
-      PORT: 5172
       DATABASE_URL: postgres://jetkvm:jetkvm@db:5432/jetkvm
     depends_on:
       db:
         condition: service_healthy
-    ports:
-        - "5172:5172"
+    command: ["sh", "-c", "npx prisma migrate deploy"]
     networks:
       - jetkvm
-
-  # Trigger prisma migration
-  # This can be done in the app container as well, but is generally discouraged.
-  app-migrate:
-    <<: *app
-    command: ["sh", "-c", "npx prisma generate && npx prisma migrate deploy"]
-    ports: []
     restart: no
+
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      DATABASE_URL: postgres://jetkvm:jetkvm@db:5432/jetkvm
+    depends_on:
+      db:
+        condition: service_healthy
+      app-migrate:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    networks:
+      - jetkvm
 
 volumes:
   postgresql:

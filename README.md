@@ -23,51 +23,52 @@ The best place to search for answers is our [Documentation](https://jetkvm.com/d
 
 If you've found an issue and want to report it, please check our [Issues](https://github.com/jetkvm/cloud-api/issues) page. Make sure the description contains information about the firmware version you're using, your platform, and a clear explanation of the steps to reproduce the issue.
 
-
 ## Development
 
-This project is built on Node.JS using Prisma and Express.
-
-To start the development server, run:
+This project is built with Node.js, Prisma, and Express.
 
 ```bash
-# For local development, you can use the following command to start a postgres instanc
-# Don't use in production
-docker run --name jetkvm-cloud-db \
-    -e POSTGRES_USER=jetkvm \
-    -e POSTGRES_PASSWORD=mysecretpassword \
-    -e POSTGRES_DB=jetkvm \
-    -d postgres
+# Start the database
+docker compose -f compose.development.yaml up -d
 
-# Copy the .env.example file to .env and populate it with the correct values
+# Copy and configure environment variables
 cp .env.example .env
 
 # Install dependencies
 npm install
 
-# Deploy the existing database migrations
-npx prisma migrate deploy
+# Run database migrations
+npm run prisma-dev-migrate
 
-# Start the production server on port 3000
+# Seed development data (optional)
+npm run seed
+
+# Start the development server with hot reload
 npm run dev
 
 # Run tests
 npm test
 ```
 
-## Production
+## Self-Hosting
+
+For self-hosting, use the default compose file which runs the complete stack:
 
 ```bash
-# Copy the .env.example file to .env and populate it with the correct values
+# Copy and configure environment variables
 cp .env.example .env
 
-# Install dependencies
-npm install
-
-# Deploy the existing database migrations
-# Needs to run on new release
-npx prisma migrate deploy
-
-# Start the production server on port 3000
-npm run start
+# Start everything (database, migrations, and app)
+docker compose up -d
 ```
+
+The app will be available on port 3000. Configure a reverse proxy (nginx, Caddy, etc.) for TLS termination.
+
+### Updating
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Database migrations run automatically on startup.
