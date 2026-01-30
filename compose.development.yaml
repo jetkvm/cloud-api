@@ -1,0 +1,24 @@
+name: jetkvm-cloud-api-dev
+
+services:
+  db:
+    image: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: jetkvm
+      POSTGRES_USER: jetkvm
+      POSTGRES_DB: jetkvm
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jetkvm -d jetkvm"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgresql:/var/lib/postgresql
+
+volumes:
+  postgresql:
+    driver: local
