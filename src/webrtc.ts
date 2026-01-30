@@ -1,21 +1,18 @@
-import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
-import * as jose from "jose";
 import { prisma } from "./db";
-import { NotFoundError, UnprocessableEntityError } from "./errors";
+import { NotFoundError, UnauthorizedError, UnprocessableEntityError } from "./errors";
 import { activeConnections, iceServers, inFlight } from "./webrtc-signaling";
 
 export const CreateSession = async (req: express.Request, res: express.Response) => {
-  const idToken = req.session?.id_token;
-  const { sub } = jose.decodeJwt(idToken);
+  const { subject } = req;
+  if (!subject) throw new UnauthorizedError("Missing subject in token");
 
   const { id, sd } = req.body;
-
   if (!id) throw new UnprocessableEntityError("Missing id");
   if (!sd) throw new UnprocessableEntityError("Missing sd");
 
   const device = await prisma.device.findUnique({
-    where: { id, user: { googleId: sub } },
+    where: { id, user: { googleId: subject } },
     select: { id: true },
   });
 
@@ -38,8 +35,15 @@ export const CreateSession = async (req: express.Request, res: express.Response)
 
   // extract the websocket and ip from the tuple
   const [ws, ip] = wsTuple;
+  const session = req.session;
+  if (!session) throw new UnauthorizedError("No session found");
 
-  let timeout: NodeJS.Timeout | undefined;
+  const idToken = session.id_token;
+  if (!idToken) throw new UnauthorizedError("No ID token found in session");
+
+  const connectionMessage = JSON.stringify({ sd, ip, iceServers, OidcGoogle: idToken })
+
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   let httpClose: (() => void) | null = null;
 
@@ -60,15 +64,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
 
       // If the HTTP client closes the connection before the websocket response is received, reject the promise
       req.socket.on("close", httpClose);
-
-      ws.send(
-        JSON.stringify({
-          sd,
-          ip,
-          iceServers,
-          OidcGoogle: idToken,
-        }),
-      );
+      ws.send(connectionMessage);
     });
 
     console.log("[CreateSession] got response from device", id);
@@ -122,7 +118,7 @@ export const CreateIceCredentials = async (
     throw new Error("No ice servers returned");
   }
 
-  if (data.iceServers.urls instanceof Array) {
+  if (Array.isArray(data.iceServers.urls)) {
     data.iceServers.urls = data.iceServers.urls.filter(url => !url.startsWith("turns"));
   }
 
@@ -130,15 +126,16 @@ export const CreateIceCredentials = async (
 };
 
 export const CreateTurnActivity = async (req: express.Request, res: express.Response) => {
-  const idToken = req.session?.id_token;
-  const { sub } = jose.decodeJwt(idToken);
+  const { subject } = req;
+  if (!subject) throw new UnauthorizedError("Missing subject in token");
+
   const { bytesReceived, bytesSent } = req.body;
 
   await prisma.turnActivity.create({
     data: {
       bytesReceived,
       bytesSent,
-      user: { connect: { googleId: sub } },
+      user: { connect: { googleId: subject } },
     },
   });
 

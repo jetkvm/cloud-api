@@ -334,7 +334,7 @@ async function isDeviceEligibleForLatestRelease(
 
 async function getDefaultRelease(type: "app" | "system") {
   const rolledOutReleases = await prisma.release.findMany({
-    where: { rolloutPercentage: 100, type },
+    where: { type, rolloutPercentage: 100 },
     select: { version: true, url: true, hash: true },
   });
 

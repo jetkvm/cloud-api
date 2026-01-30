@@ -1,7 +1,6 @@
 import express from "express";
 import cors from "cors";
 import cookieSession from "cookie-session";
-import * as jose from "jose";
 import helmet from "helmet";
 import 'dotenv/config';
 
@@ -97,26 +96,25 @@ app.get(
   "/me",
   authenticated,
   async (req: express.Request, res: express.Response) => {
-    const idToken = req.session?.id_token;
-    const { sub, iss, exp, aud, iat, jti, nbf } = jose.decodeJwt(idToken);
+    const { subject, issuer } = req;
+    if (!subject || !issuer) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
 
     let user;
-    if (iss === "https://accounts.google.com") {
+    if (issuer === "https://accounts.google.com") {
       user = await prisma.user.findUnique({
-        where: { googleId: sub },
+        where: { googleId: subject },
         select: { picture: true, email: true },
       });
     }
 
-    return res.json({ ...user, sub });
+    return res.json({ ...user, subject });
   },
 );
 
 app.get("/releases", Releases.Retrieve);
-app.get(
-  "/releases/system_recovery/latest",
-  Releases.RetrieveLatestSystemRecovery,
-);
+app.get("/releases/system_recovery/latest", Releases.RetrieveLatestSystemRecovery);
 app.get("/releases/app/latest", Releases.RetrieveLatestApp);
 
 app.get("/devices", authenticated, Devices.List);
@@ -127,11 +125,7 @@ app.delete("/devices/:id", Devices.Delete);
 
 app.post("/webrtc/session", authenticated, Webrtc.CreateSession);
 app.post("/webrtc/ice_config", authenticated, Webrtc.CreateIceCredentials);
-app.post(
-  "/webrtc/turn_activity",
-  authenticated,
-  Webrtc.CreateTurnActivity,
-);
+app.post("/webrtc/turn_activity", authenticated, Webrtc.CreateTurnActivity);
 
 app.post("/oidc/google", OIDC.Google);
 app.get("/oidc/callback_o", OIDC.Callback);

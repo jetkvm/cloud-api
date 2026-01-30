@@ -1,4 +1,4 @@
-FROM node:21.1.0-alpine AS packages
+FROM node:22.22.0-alpine AS packages
 WORKDIR /usr/src/app
 
 COPY LICENSE /usr/src/app/

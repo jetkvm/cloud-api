@@ -1,104 +1,90 @@
-import { generators, Issuer } from "openid-client";
+import * as client from "openid-client";
 import express from "express";
 import { prisma } from "./db";
-import { BadRequestError } from "./errors";
+import { UnauthorizedError } from "./errors";
 import * as crypto from "crypto";
 
 const API_HOSTNAME = process.env.API_HOSTNAME;
 const APP_HOSTNAME = process.env.APP_HOSTNAME;
 const REDIRECT_URI = `${API_HOSTNAME}/oidc/callback`;
 
-const getGoogleOIDCClient = async () => {
-  const googleIssuer = await Issuer.discover("https://accounts.google.com");
-  return new googleIssuer.Client({
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
-    redirect_uris: [REDIRECT_URI],
-    response_types: ["code"],
-  });
+const getConfig = async () => {
+  let server: URL = new URL("https://accounts.google.com") // Authorization server's Issuer Identifier URL
+  let clientId: string = process.env.GOOGLE_CLIENT_ID
+  let clientSecret: string = process.env.GOOGLE_CLIENT_SECRET
+  let config = await client.discovery(server, clientId, clientSecret)
+  return config
 };
 
 export const Google = async (req: express.Request, res: express.Response) => {
-  const state = new URLSearchParams();
+  let code_challenge_method = 'S256'
+  let code_verifier = client.randomPKCECodeVerifier()
+  let code_challenge = await client.calculatePKCECodeChallenge(code_verifier)
+  let nonce!: string
 
-  // Generate a CSRF token and store it in the session, so the callback
-  // can ensure that the request is the same as the one that was initiated.
-  state.set("csrf", generators.state());
-  req.session!.csrf = state.get("csrf");
+  let parameters: Record<string, string> = {
+    REDIRECT_URI,
+    scope: 'openid email profile',
+    code_challenge,
+    code_challenge_method,
+  }
 
+  let config = await getConfig()
+  
+  if (!config.serverMetadata().supportsPKCE()) {
+    nonce = client.randomNonce()
+    parameters.nonce = nonce
+  }
+
+  let redirectTo = client.buildAuthorizationUrl(config, parameters)
+
+  req.session!.code_verifier  = code_verifier;
+  req.session!.nonce = nonce;
   req.session!.deviceId = req.body.deviceId;
   req.session!.returnTo = req.body.returnTo;
 
-  const code_verifier = generators.codeVerifier();
-  const code_challenge = generators.codeChallenge(code_verifier);
-  req.session!.code_verifier = code_verifier;
-
-  const client = await getGoogleOIDCClient();
-  const authorizationUrl = client.authorizationUrl({
-    scope: "openid email profile",
-    state: state.toString(),
-    // This ensures that to even issue the token, the client must have the code_verifier,
-    // which is stored in the session cookie.
-    code_challenge,
-    code_challenge_method: "S256",
-  });
-  return res.redirect(authorizationUrl);
+  return res.redirect(redirectTo.toString());
 };
 
 export const Callback = async (req: express.Request, res: express.Response) => {
-  const client = await getGoogleOIDCClient();
+  const session = req.session!;
+  let code_verifier = session.code_verifier;
+  let nonce = session.nonce;
+  let deviceId = session.deviceId as string | undefined;
+  let returnTo = (session.returnTo ?? `${APP_HOSTNAME}/devices`) as string;
+  let currentUrl: URL = new URL(req.url, `${API_HOSTNAME}`);
 
-  // Retrieve recognized callback parameters from the request, e.g. code and state
-  const params = client.callbackParams(req);
-  if (!params)
-    throw new BadRequestError("Missing callback parameters", "missing_callback_params");
+  let config = await getConfig()
+  let tokens = await client.authorizationCodeGrant(config, currentUrl, {
+    pkceCodeVerifier: code_verifier,
+    expectedNonce: nonce,
+    idTokenExpected: true,
+  })
+  
+  let { access_token, id_token } = tokens
+  let claims = tokens.claims()!
+  let subject = claims.sub;
 
-  const sessionCsrf = req.session?.csrf;
-  if (!sessionCsrf) {
-    throw new BadRequestError("Missing CSRF in session", "missing_csrf");
-  }
+  session.id_token = id_token;
+  session.code_verifier = null;
+  session.nonce = null;
+  session.returnTo = null;
+  session.deviceId = null;
 
-  const thisRequestCsrf = new URLSearchParams(params.state).get("csrf");
-  if (thisRequestCsrf !== sessionCsrf) {
-    throw new BadRequestError("Invalid CSRF", "invalid_csrf");
-  }
+  if (!id_token) throw new UnauthorizedError();
 
-  const deviceId = req.session?.deviceId as string | undefined;
-  const returnTo = (req.session?.returnTo ?? `${APP_HOSTNAME}/devices`) as string;
-
-  req.session!.csrf = null;
-  req.session!.returnTo = null;
-  req.session!.deviceId = null;
-
-  // Exchange code for access token and ID token
-  const tokenSet = await client.callback(REDIRECT_URI, params, {
-    state: req.query.state?.toString(),
-    code_verifier: req.session?.code_verifier,
-  });
-
-  const userInfo = await client.userinfo(tokenSet);
-
-  // TokenClaims is an object that contains the sub, email, name and other claims
-  const tokenClaims = tokenSet.claims();
-  if (!tokenClaims) {
-    throw new BadRequestError("Missing claims in token", "missing_claims");
-  }
-
-  if (!tokenSet.id_token) {
-    throw new BadRequestError("Missing ID Token", "missing_id_token");
-  }
-
-  req.session!.id_token = tokenSet.id_token;
+  let userInfo = await client.fetchUserInfo(config, access_token, subject)
+  console.log("User", userInfo);
 
   await prisma.user.upsert({
-    where: { googleId: tokenClaims.sub },
+    where: { googleId: subject },
     update: {
-      googleId: tokenClaims.sub,
+      googleId: subject,
       email: userInfo.email,
       picture: userInfo.picture,
     },
     create: {
-      googleId: tokenClaims.sub,
+      googleId: subject,
       email: userInfo.email,
       picture: userInfo.picture,
     },
@@ -111,8 +97,7 @@ export const Callback = async (req: express.Request, res: express.Response) => {
       select: { user: { select: { googleId: true } } },
     });
 
-
-    const isAdoptedByCurrentUser = deviceAdopted?.user.googleId === tokenClaims.sub;
+    const isAdoptedByCurrentUser = deviceAdopted?.user.googleId === subject;
     const isAdoptedByOther = deviceAdopted && !isAdoptedByCurrentUser;
     if (isAdoptedByOther) {
       // Device is already adopted by another user. This can happen if:
@@ -134,7 +119,7 @@ export const Callback = async (req: express.Request, res: express.Response) => {
     const tempTokenExpiresAt = new Date(new Date().getTime() + 5 * 60000);
 
     await prisma.user.update({
-      where: { googleId: tokenClaims.sub },
+      where: { googleId: subject },
       data: {
         device: {
           upsert: {
@@ -146,14 +131,14 @@ export const Callback = async (req: express.Request, res: express.Response) => {
       },
     });
 
-    console.log("Adopted device", deviceId, "for user", tokenClaims.sub);
+    console.log("Adopted device", deviceId, "for user", subject);
 
     const url = new URL(returnTo);
     url.searchParams.append("tempToken", tempToken);
     url.searchParams.append("deviceId", deviceId);
-    url.searchParams.append("oidcGoogle", tokenSet.id_token.toString());
+    url.searchParams.append("oidcGoogle", id_token!.toString());
     url.searchParams.append("clientId", process.env.GOOGLE_CLIENT_ID);
     return res.redirect(url.toString());
   }
-  return res.redirect(returnTo);
+  return res.redirect(returnTo.toString());
 };

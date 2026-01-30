@@ -20,6 +20,8 @@ model User {
   picture  String?
   device   Device[]
   Activity TurnActivity[]
+
+  @@index([googleId], type: Hash)
 }
 
 model Device {
@@ -31,6 +33,10 @@ model Device {
   tempToken          String?
   tempTokenExpiresAt DateTime?
   secretToken        String?   @unique
+
+  @@index([userId], type: Hash)
+  @@index([tempToken], type: Hash)
+  @@index([secretToken], type: Hash)
 }
 
 model TurnActivity {
@@ -40,6 +46,8 @@ model TurnActivity {
   createdAt     DateTime? @default(now()) @db.Timestamp(6)
   bytesSent     Int
   bytesReceived Int
+
+  @@index([userId], type: Hash)
 }
 
 model Release {
@@ -53,4 +61,5 @@ model Release {
   hash              String
 
   @@unique([version, type])
+  @@index([type, rolloutPercentage])
 }
