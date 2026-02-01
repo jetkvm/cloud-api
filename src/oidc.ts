@@ -1,7 +1,8 @@
 import { generators, Issuer } from "openid-client";
 import express from "express";
 import { prisma } from "./db";
-import { BadRequestError } from "./errors";
+import { BadRequestError, UnauthorizedError } from "./errors";
+import { isIdentityAllowed } from "./auth";
 import * as crypto from "crypto";
 
 const API_HOSTNAME = process.env.API_HOSTNAME;
@@ -86,6 +87,15 @@ export const Callback = async (req: express.Request, res: express.Response) => {
 
   if (!tokenSet.id_token) {
     throw new BadRequestError("Missing ID Token", "missing_id_token");
+  }
+
+  if (!userInfo.email) {
+    req.session = null;
+    throw new BadRequestError("Missing email claim in user info", "missing_email_claim");
+  }
+  if (!isIdentityAllowed(userInfo.email)) {
+    req.session = null;
+    throw new UnauthorizedError("Account is not in the allowlist", "account_not_allowed");
   }
 
   req.session!.id_token = tokenSet.id_token;

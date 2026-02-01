@@ -45,6 +45,8 @@ declare global {
       // Real IP
       REAL_IP_HEADER: string;
       ICE_SERVERS: string;
+
+      ALLOWED_IDENTITIES?: string;
     }
   }
 }
