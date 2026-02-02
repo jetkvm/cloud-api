@@ -2,6 +2,22 @@ import { type NextFunction, type Request, type Response } from "express";
 import * as jose from "jose";
 import { UnauthorizedError } from "./errors";
 
+const ALLOWED_IDENTITIES = process.env.ALLOWED_IDENTITIES?.split(",")
+    .map((identity) => identity.trim().toLowerCase())
+    .filter(Boolean);
+
+const getAllowedIdentities = () => {
+  if (!ALLOWED_IDENTITIES) return null;
+  return ALLOWED_IDENTITIES.length > 0 ? new Set(ALLOWED_IDENTITIES) : null;
+};
+
+export const isIdentityAllowed = (identity?: string | null) => {
+  const allowedIdentities = getAllowedIdentities();
+  const identityNormalized = identity?.trim().toLowerCase();
+  if (!allowedIdentities) return true;
+  if (!identityNormalized) return false;
+  return allowedIdentities.has(identityNormalized);
+};
 
 export const verifyToken = async (idToken: string) => {
   const JWKS = jose.createRemoteJWKSet(
@@ -31,6 +47,11 @@ export const authenticated = async (req: Request, res: Response, next: NextFunct
 
   if (new Date(payload.exp * 1000) < new Date()) {
     throw new UnauthorizedError();
+  }
+
+  const email = (payload as { email?: string }).email;
+  if (!isIdentityAllowed(email)) {
+    throw new UnauthorizedError("Account is not in the allowlist", "account_not_allowed");
   }
 
   next();
