@@ -47,8 +47,9 @@ function mockS3ListVersions(prefix: "app" | "system", versions: string[]) {
 }
 
 // Mock S3 hash file response for legacy versions (no SKU support)
-function mockS3HashFile(prefix: "app" | "system", version: string, hash: string) {
+function mockS3HashFile(prefix: "app" | "system", version: string, hash: string, opts?: { hasSig?: boolean }) {
   const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const artifactPath = `${prefix}/${version}/${fileName}`;
 
   // Mock versionHasSkuSupport to return false (no SKU folders)
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/${version}/skus/` }).resolves({
@@ -56,9 +57,14 @@ function mockS3HashFile(prefix: "app" | "system", version: string, hash: string)
   });
 
   // Mock legacy hash path
-  s3Mock.on(GetObjectCommand, { Key: `${prefix}/${version}/${fileName}.sha256` }).resolves({
+  s3Mock.on(GetObjectCommand, { Key: `${artifactPath}.sha256` }).resolves({
     Body: createAsyncIterable(hash) as any,
   });
+
+  // Mock .sig existence check (absence handled by default HeadObject reject in beforeEach)
+  if (opts?.hasSig) {
+    s3Mock.on(HeadObjectCommand, { Key: `${artifactPath}.sig` }).resolves({});
+  }
 }
 
 // Mock S3 for versions with SKU support
@@ -67,6 +73,7 @@ function mockS3SkuVersion(
   version: string,
   sku: string,
   hash: string,
+  opts?: { hasSig?: boolean },
 ) {
   const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
   const skuPath = `${prefix}/${version}/skus/${sku}/${fileName}`;
@@ -83,6 +90,11 @@ function mockS3SkuVersion(
   s3Mock.on(GetObjectCommand, { Key: `${skuPath}.sha256` }).resolves({
     Body: createAsyncIterable(hash) as any,
   });
+
+  // Mock .sig existence check (absence handled by default HeadObject reject in beforeEach)
+  if (opts?.hasSig) {
+    s3Mock.on(HeadObjectCommand, { Key: `${skuPath}.sig` }).resolves({});
+  }
 }
 
 
@@ -161,6 +173,9 @@ function findDeviceIdInsideRollout(threshold: number) {
 describe("Retrieve handler", () => {
   beforeEach(() => {
     s3Mock.reset();
+    // Default: .sig files don't exist unless explicitly mocked per-key.
+    // More specific .on(HeadObjectCommand, { Key }) mocks take precedence.
+    s3Mock.on(HeadObjectCommand).rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
     clearCaches();
   });
 
@@ -451,6 +466,68 @@ describe("Retrieve handler", () => {
     });
   });
 
+  describe("signature URL handling", () => {
+    it("should include sigUrl when .sig file exists", async () => {
+      const req = createMockRequest({
+        deviceId: "device-sig",
+        prerelease: "true",
+        appVersion: "^6.0.0",
+        systemVersion: "^6.0.0",
+      });
+      const res = createMockResponse();
+
+      mockS3ListVersions("app", ["6.0.0"]);
+      mockS3ListVersions("system", ["6.0.0"]);
+      mockS3HashFile("app", "6.0.0", "sig-app-hash", { hasSig: true });
+      mockS3HashFile("system", "6.0.0", "sig-system-hash", { hasSig: true });
+
+      await Retrieve(req, res);
+
+      expect(res._json.appSigUrl).toBe("https://cdn.test.com/app/6.0.0/jetkvm_app.sig");
+      expect(res._json.systemSigUrl).toBe("https://cdn.test.com/system/6.0.0/system.tar.sig");
+    });
+
+    it("should omit sigUrl when .sig file does not exist", async () => {
+      const req = createMockRequest({
+        deviceId: "device-nosig",
+        prerelease: "true",
+        appVersion: "^7.0.0",
+        systemVersion: "^7.0.0",
+      });
+      const res = createMockResponse();
+
+      mockS3ListVersions("app", ["7.0.0"]);
+      mockS3ListVersions("system", ["7.0.0"]);
+      mockS3HashFile("app", "7.0.0", "nosig-app-hash");
+      mockS3HashFile("system", "7.0.0", "nosig-system-hash");
+
+      await Retrieve(req, res);
+
+      expect(res._json.appSigUrl).toBeUndefined();
+      expect(res._json.systemSigUrl).toBeUndefined();
+    });
+
+    it("should include sigUrl with SKU path when .sig file exists", async () => {
+      const req = createMockRequest({
+        deviceId: "device-sku-sig",
+        sku: "jetkvm-2",
+        appVersion: "^8.0.0",
+        systemVersion: "^8.0.0",
+      });
+      const res = createMockResponse();
+
+      mockS3ListVersions("app", ["8.0.0"]);
+      mockS3ListVersions("system", ["8.0.0"]);
+      mockS3SkuVersion("app", "8.0.0", "jetkvm-2", "sku-sig-app-hash", { hasSig: true });
+      mockS3SkuVersion("system", "8.0.0", "jetkvm-2", "sku-sig-system-hash", { hasSig: true });
+
+      await Retrieve(req, res);
+
+      expect(res._json.appSigUrl).toBe("https://cdn.test.com/app/8.0.0/skus/jetkvm-2/jetkvm_app.sig");
+      expect(res._json.systemSigUrl).toBe("https://cdn.test.com/system/8.0.0/skus/jetkvm-2/system.tar.sig");
+    });
+  });
+
   describe("forceUpdate mode", () => {
     it("should return latest release when forceUpdate=true", async () => {
       // Use unique version constraints to get unique cache keys
@@ -472,6 +549,25 @@ describe("Retrieve handler", () => {
       // forceUpdate should return the latest version from S3 (upserted in DB)
       expect(res._json.appVersion).toBe("1.5.5");
       expect(res._json.systemVersion).toBe("1.5.5");
+    });
+
+    it("should include sigUrl when forceUpdate=true and .sig file exists", async () => {
+      const req = createMockRequest({
+        deviceId: "device-force-sig",
+        forceUpdate: "true",
+      });
+      const res = createMockResponse();
+
+      mockS3ListVersions("app", ["10.0.0"]);
+      mockS3ListVersions("system", ["10.0.0"]);
+      mockS3HashFile("app", "10.0.0", "force-sig-app-hash", { hasSig: true });
+      mockS3HashFile("system", "10.0.0", "force-sig-system-hash", { hasSig: true });
+
+      await Retrieve(req, res);
+
+      expect(res._json.appVersion).toBe("10.0.0");
+      expect(res._json.appSigUrl).toBe("https://cdn.test.com/app/10.0.0/jetkvm_app.sig");
+      expect(res._json.systemSigUrl).toBe("https://cdn.test.com/system/10.0.0/system.tar.sig");
     });
   });
 
@@ -570,6 +666,28 @@ describe("Retrieve handler", () => {
       // App gets 1.2.0 (100% rollout), system gets 1.1.0 (default, since 1.2.0 is 0%)
       expect(res._json.appVersion).toBe("1.2.0");
       expect(res._json.systemVersion).toBe("1.1.0");
+    });
+
+    it("should include sigUrl for rollout-eligible device when .sig file exists", async () => {
+      await setRollout("1.1.0", "app", 100);
+      await setRollout("1.1.0", "system", 100);
+      await setRollout("1.2.0", "app", 100);
+      await setRollout("1.2.0", "system", 100);
+
+      const deviceId = findDeviceIdInsideRollout(100);
+      const req = createMockRequest({ deviceId });
+      const res = createMockResponse();
+
+      mockS3ListVersions("app", ["1.0.0", "1.1.0", "1.2.0"]);
+      mockS3ListVersions("system", ["1.0.0", "1.1.0", "1.2.0"]);
+      mockS3HashFile("app", "1.2.0", "rollout-sig-app-hash", { hasSig: true });
+      mockS3HashFile("system", "1.2.0", "rollout-sig-system-hash", { hasSig: true });
+
+      await Retrieve(req, res);
+
+      expect(res._json.appVersion).toBe("1.2.0");
+      expect(res._json.appSigUrl).toBe("https://cdn.test.com/app/1.2.0/jetkvm_app.sig");
+      expect(res._json.systemSigUrl).toBe("https://cdn.test.com/system/1.2.0/system.tar.sig");
     });
   });
 

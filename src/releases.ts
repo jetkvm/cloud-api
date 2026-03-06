@@ -101,6 +101,11 @@ const releaseCache = new LRUCache<string, ReleaseMetadata>({
   ttl: 5 * 60 * 1000, // 5 minutes
 });
 
+const sigUrlCache = new LRUCache<string, string | null>({
+  max: 1000,
+  ttl: 5 * 60 * 1000, // 5 minutes
+});
+
 const redirectCache = new LRUCache<string, string>({
   max: 1000,
   ttl: 5 * 60 * 1000, // 5 minutes
@@ -110,6 +115,7 @@ const redirectCache = new LRUCache<string, string>({
 export function clearCaches() {
   releaseCache.clear();
   redirectCache.clear();
+  sigUrlCache.clear();
 }
 
 const bucketName = process.env.R2_BUCKET;
@@ -203,6 +209,67 @@ async function resolveArtifactPath(
   );
 }
 
+/**
+ * Resolves the signature URL for a given version if a .sig file exists in S3.
+ * Results are cached for 5 minutes.
+ */
+async function resolveSigUrl(
+  prefix: "app" | "system",
+  version: string,
+  sku: string,
+): Promise<string | undefined> {
+  const cacheKey = `${prefix}-${version}-${sku}`;
+  const cached = sigUrlCache.get(cacheKey);
+  if (cached !== undefined) return cached ?? undefined;
+
+  try {
+    const path = await resolveArtifactPath(prefix, version, sku);
+    const sigKey = `${path}.sig`;
+    if (await s3ObjectExists(sigKey)) {
+      const url = `${baseUrl}/${sigKey}`;
+      sigUrlCache.set(cacheKey, url);
+      return url;
+    }
+  } catch (error) {
+    if (error instanceof NotFoundError) {
+      // Version doesn't exist for this SKU — cache as absent
+      sigUrlCache.set(cacheKey, null);
+      return undefined;
+    }
+    // Don't cache transient errors (network, permissions, etc.)
+    throw error;
+  }
+
+  sigUrlCache.set(cacheKey, null);
+  return undefined;
+}
+
+/**
+ * Enriches a Release response with signature URLs by checking S3 for .sig files.
+ * Transient S3 errors are logged but don't block the response — sigUrl is optional.
+ */
+async function enrichWithSigUrls(release: Release, sku: string): Promise<void> {
+  const [appSigUrl, systemSigUrl] = await Promise.all([
+    release.appVersion
+      ? resolveSigUrl("app", release.appVersion, sku).catch(e => {
+          console.error(`Failed to resolve app sig URL for ${release.appVersion}:`, e);
+          return undefined;
+        })
+      : undefined,
+    release.systemVersion
+      ? resolveSigUrl("system", release.systemVersion, sku).catch(e => {
+          console.error(
+            `Failed to resolve system sig URL for ${release.systemVersion}:`,
+            e,
+          );
+          return undefined;
+        })
+      : undefined,
+  ]);
+  if (appSigUrl) release.appSigUrl = appSigUrl;
+  if (systemSigUrl) release.systemSigUrl = systemSigUrl;
+}
+
 async function getLatestVersion(
   prefix: "app" | "system",
   includePrerelease: boolean,
@@ -257,7 +324,7 @@ async function getLatestVersion(
   const hash = await streamToString(hashResponse.Body);
 
   // Cache the release metadata
-  const release = {
+  const release: ReleaseMetadata = {
     version: latestVersion,
     url,
     hash,
@@ -272,12 +339,14 @@ interface Release {
   appVersion: string;
   appUrl: string;
   appHash: string;
+  appSigUrl?: string;
   appCachedAt?: number;
   appMaxSatisfying?: string;
 
   systemVersion: string;
   systemUrl: string;
   systemHash: string;
+  systemSigUrl?: string;
   systemCachedAt?: number;
   systemMaxSatisfying?: string;
 }
@@ -387,6 +456,7 @@ export async function Retrieve(req: Request, res: Response) {
 
   // If the version isn't a wildcard, we skip the rollout percentage check
   if (query.prerelease || skipRollout) {
+    await enrichWithSigUrls(remoteRelease, query.sku);
     return res.json(remoteRelease);
   }
 
@@ -423,32 +493,37 @@ export async function Retrieve(req: Request, res: Response) {
     This occurs when a user manually checks for updates in the app UI.
     Background update checks follow the normal rollout percentage rules, to ensure controlled, gradual deployment of updates.
   */
+  let responseJson: Release;
   if (query.forceUpdate) {
-    return res.json(toRelease(latestAppRelease, latestSystemRelease));
+    responseJson = toRelease(latestAppRelease, latestSystemRelease);
+  } else {
+    const defaultAppRelease = await getDefaultRelease("app");
+    const defaultSystemRelease = await getDefaultRelease("system");
+
+    responseJson = toRelease(defaultAppRelease, defaultSystemRelease);
+
+    if (
+      await isDeviceEligibleForLatestRelease(
+        latestAppRelease.rolloutPercentage,
+        query.deviceId,
+      )
+    ) {
+      setAppRelease(responseJson, latestAppRelease);
+    }
+
+    if (
+      await isDeviceEligibleForLatestRelease(
+        latestSystemRelease.rolloutPercentage,
+        query.deviceId,
+      )
+    ) {
+      setSystemRelease(responseJson, latestSystemRelease);
+    }
   }
 
-  const defaultAppRelease = await getDefaultRelease("app");
-  const defaultSystemRelease = await getDefaultRelease("system");
-
-  const responseJson = toRelease(defaultAppRelease, defaultSystemRelease);
-
-  if (
-    await isDeviceEligibleForLatestRelease(
-      latestAppRelease.rolloutPercentage,
-      query.deviceId,
-    )
-  ) {
-    setAppRelease(responseJson, latestAppRelease);
-  }
-
-  if (
-    await isDeviceEligibleForLatestRelease(
-      latestSystemRelease.rolloutPercentage,
-      query.deviceId,
-    )
-  ) {
-    setSystemRelease(responseJson, latestSystemRelease);
-  }
+  // DB records don't store sigUrl. Resolve from S3 for the versions being served.
+  // The device requires sigUrl for stable (non-prerelease) GPG signature verification.
+  await enrichWithSigUrls(responseJson, query.sku);
 
   return res.json(responseJson);
 }
