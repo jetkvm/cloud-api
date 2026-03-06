@@ -101,7 +101,9 @@ const releaseCache = new LRUCache<string, ReleaseMetadata>({
   ttl: 5 * 60 * 1000, // 5 minutes
 });
 
-const sigUrlCache = new LRUCache<string, string | null>({
+const MISSING_SIG_URL = false;
+
+const sigUrlCache = new LRUCache<string, string | typeof MISSING_SIG_URL>({
   max: 1000,
   ttl: 5 * 60 * 1000, // 5 minutes
 });
@@ -220,7 +222,7 @@ async function resolveSigUrl(
 ): Promise<string | undefined> {
   const cacheKey = `${prefix}-${version}-${sku}`;
   const cached = sigUrlCache.get(cacheKey);
-  if (cached !== undefined) return cached ?? undefined;
+  if (cached !== undefined) return cached === MISSING_SIG_URL ? undefined : cached;
 
   try {
     const path = await resolveArtifactPath(prefix, version, sku);
@@ -233,14 +235,14 @@ async function resolveSigUrl(
   } catch (error) {
     if (error instanceof NotFoundError) {
       // Version doesn't exist for this SKU — cache as absent
-      sigUrlCache.set(cacheKey, null);
+      sigUrlCache.set(cacheKey, MISSING_SIG_URL);
       return undefined;
     }
     // Don't cache transient errors (network, permissions, etc.)
     throw error;
   }
 
-  sigUrlCache.set(cacheKey, null);
+  sigUrlCache.set(cacheKey, MISSING_SIG_URL);
   return undefined;
 }
 
