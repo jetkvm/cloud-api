@@ -1,9 +1,18 @@
 import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
 import * as jose from "jose";
+import * as crypto from "crypto";
 import { prisma } from "./db";
-import { NotFoundError, UnprocessableEntityError } from "./errors";
+import { BadRequestError, InternalServerError, NotFoundError, UnprocessableEntityError } from "./errors";
 import { activeConnections, iceServers, inFlight } from "./webrtc-signaling";
+
+const CLOUDFLARE_TURN_ID = process.env.CLOUDFLARE_TURN_ID;
+const CLOUDFLARE_TURN_TOKEN = process.env.CLOUDFLARE_TURN_TOKEN;
+const COTURN_TURN_URLS = process.env.COTURN_TURN_URLS?.split(",")
+  .map(url => url.trim())
+  .filter(Boolean);
+const COTURN_TURN_SECRET = process.env.COTURN_TURN_SECRET;
+const TURN_TTL = Number.parseInt(process.env.TURN_TTL ?? "", 10) || 3600;
 
 export const CreateSession = async (req: express.Request, res: express.Response) => {
   const idToken = req.session?.id_token;
@@ -102,31 +111,61 @@ export const CreateIceCredentials = async (
   req: express.Request,
   res: express.Response,
 ) => {
-  const resp = await fetch(
-    `https://rtc.live.cloudflare.com/v1/turn/keys/${process.env.CLOUDFLARE_TURN_ID}/credentials/generate`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.CLOUDFLARE_TURN_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ ttl: 3600 }),
-    },
-  );
+  const idToken = req.session?.id_token;
+  if (!idToken) {
+    throw new UnprocessableEntityError("Missing ID token");
+  }
+  const { sub } = jose.decodeJwt(idToken);
 
-  const data = (await resp.json()) as {
-    iceServers: { credential?: string; urls: string | string[]; username?: string };
+  let iceConfig: {
+    iceServers: { urls: string | string[]; username?: string, credential?: string }
   };
 
-  if (!data.iceServers.urls) {
-    throw new Error("No ice servers returned");
+  if (CLOUDFLARE_TURN_ID && CLOUDFLARE_TURN_TOKEN) {
+    const resp = await fetch(
+      `https://rtc.live.cloudflare.com/v1/turn/keys/${CLOUDFLARE_TURN_ID}/credentials/generate`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${CLOUDFLARE_TURN_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ttl: TURN_TTL }),
+      },
+    );
+
+    const cloudflareIceConfig = await resp.json() as {
+      iceServers: { urls: string | string[]; username?: string, credential?: string }
+    };
+
+    if (!cloudflareIceConfig?.iceServers.urls) {
+      throw new InternalServerError("No ice servers returned");
+    }
+
+    if (cloudflareIceConfig.iceServers.urls instanceof Array) {
+      cloudflareIceConfig.iceServers.urls = cloudflareIceConfig.iceServers.urls.filter(url => !url.startsWith("turns"));
+    }
+
+    iceConfig = cloudflareIceConfig;
+  } else if (COTURN_TURN_URLS && COTURN_TURN_SECRET && COTURN_TURN_URLS.length > 0) {
+    const username = `${Math.floor(Date.now() / 1000) + TURN_TTL}:${sub}`;
+    const credential = crypto
+      .createHmac("sha1", COTURN_TURN_SECRET)
+      .update(username)
+      .digest("base64");
+
+    iceConfig = {
+      iceServers: {
+        urls: COTURN_TURN_URLS,
+        username: username,
+        credential: credential,
+      }
+    };
+  } else {
+    throw new BadRequestError("No TURN configuration available", "no_turn_configuration");
   }
 
-  if (data.iceServers.urls instanceof Array) {
-    data.iceServers.urls = data.iceServers.urls.filter(url => !url.startsWith("turns"));
-  }
-
-  return res.json(data);
+  return res.json(iceConfig);
 };
 
 export const CreateTurnActivity = async (req: express.Request, res: express.Response) => {
