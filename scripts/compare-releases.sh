@@ -5,7 +5,11 @@ set -uo pipefail
 LOCAL_BASE="${LOCAL_BASE:-http://localhost:3000}"
 PROD_BASE="${PROD_BASE:-https://api.jetkvm.com}"
 
-DEFAULT_DEVICE_IDS=("compare-device-1")
+# Two device IDs picked so they straddle a typical staged rollout window:
+#   compare-device-1 → rollout bucket 81 (skips releases < 81%)
+#   compare-device-2 → rollout bucket 9  (catches releases >= 10%)
+# Together they exercise both eligible and ineligible rollout paths.
+DEFAULT_DEVICE_IDS=("compare-device-1" "compare-device-2")
 DEFAULT_SKUS=("__omit__" "jetkvm-v2" "jetkvm-v2-sdmmc")
 TRISTATE_VALUES=("__omit__" "false" "true")
 

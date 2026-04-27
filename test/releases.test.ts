@@ -454,6 +454,41 @@ describe("Retrieve handler", () => {
       });
     });
 
+    it("keeps the default when an in-rollout release has no compatible artifact", async () => {
+      await createDbRelease("app", "3.2.5", 100, [
+        {
+          ...releaseArtifact("app", "3.2.5", DEFAULT_SKU),
+          compatibleSkus: [DEFAULT_SKU, SDMMC_SKU],
+        },
+      ]);
+      await createDbRelease("app", "3.2.6", 10, [
+        releaseArtifact("app", "3.2.6", DEFAULT_SKU),
+      ]);
+      await createDbRelease("system", "3.2.5", 100, [
+        releaseArtifact("system", "3.2.5", DEFAULT_SKU, "system-default-hash"),
+        releaseArtifact("system", "3.2.5", SDMMC_SKU, "system-sdmmc-hash"),
+      ]);
+
+      // sdmmc-fallback-device hashes to bucket 33 — outside the 10% rollout
+      // window, so the request must not even attempt to upgrade onto 3.2.6.
+      const res = createMockResponse();
+      await Retrieve(
+        createMockRequest({
+          deviceId: "sdmmc-fallback-device",
+          sku: SDMMC_SKU,
+        }),
+        res,
+      );
+
+      expect(jsonBody(res)).toMatchObject({
+        appVersion: "3.2.5",
+        appUrl: artifactUrl("app", "3.2.5"),
+        systemVersion: "3.2.5",
+        systemUrl: artifactUrl("system", "3.2.5", SDMMC_SKU),
+        systemHash: "system-sdmmc-hash",
+      });
+    });
+
     it("does not fall back when the latest release lacks a compatible artifact", async () => {
       await createDbRelease("app", "3.3.0", 100, [
         {
