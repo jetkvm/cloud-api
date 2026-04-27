@@ -20,6 +20,7 @@ import {
 import { z, ZodError } from "zod";
 
 const DEFAULT_SKU = "jetkvm-v2";
+type ReleaseType = "app" | "system";
 
 /** Query param schema builders for common patterns */
 const queryString = () =>
@@ -85,6 +86,15 @@ export interface ReleaseMetadata {
   hash: string;
   _cachedAt?: number;
   _maxSatisfying?: string;
+}
+
+interface DbRelease {
+  version: string;
+  rolloutPercentage: number;
+  artifacts: {
+    url: string;
+    hash: string;
+  }[];
 }
 
 const s3Client = new S3Client({
@@ -379,6 +389,10 @@ function toRelease(
   return release as Release;
 }
 
+function addStableSigUrls(release: Release): void {
+  if (release.appUrl) release.appSigUrl = `${release.appUrl}.sig`;
+}
+
 async function getReleaseFromS3(
   includePrerelease: boolean,
   {
@@ -403,10 +417,48 @@ async function isDeviceEligibleForLatestRelease(
   return getDeviceRolloutBucket(deviceId) < rolloutPercentage;
 }
 
-async function getDefaultRelease(type: "app" | "system") {
+function compatibleArtifactSelect(sku: string) {
+  return {
+    where: { compatibleSkus: { has: sku } },
+    select: { url: true, hash: true },
+    orderBy: { id: "asc" as const },
+    take: 1,
+  };
+}
+
+function compatibleReleaseSelect(sku: string) {
+  return {
+    version: true,
+    rolloutPercentage: true,
+    artifacts: compatibleArtifactSelect(sku),
+  } as const;
+}
+
+function dbReleaseToMetadata(
+  release: DbRelease,
+  type: ReleaseType,
+  sku: string,
+  maxSatisfying?: string,
+): ReleaseMetadata {
+  const artifact = release.artifacts[0];
+  if (!artifact) {
+    throw new NotFoundError(
+      `Version ${release.version} predates SKU support and cannot serve SKU "${sku}"`,
+    );
+  }
+
+  return {
+    version: release.version,
+    url: artifact.url,
+    hash: artifact.hash,
+    _maxSatisfying: maxSatisfying,
+  };
+}
+
+async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
   const rolledOutReleases = await prisma.release.findMany({
     where: { rolloutPercentage: 100, type },
-    select: { version: true, url: true, hash: true },
+    select: compatibleReleaseSelect(sku),
   });
 
   if (rolledOutReleases.length === 0) {
@@ -429,6 +481,41 @@ async function getDefaultRelease(type: "app" | "system") {
   return latestDefaultRelease;
 }
 
+async function getLatestRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
+  return getReleaseByRange(type, sku, "*");
+}
+
+async function getReleaseByRange(
+  type: ReleaseType,
+  sku: string,
+  range: string,
+): Promise<DbRelease> {
+  const releases = await prisma.release.findMany({
+    where: { type },
+    select: compatibleReleaseSelect(sku),
+  });
+
+  if (releases.length === 0) {
+    throw new NotFoundError(`No release found for type ${type}`);
+  }
+
+  const latestVersion = semver.maxSatisfying(
+    releases.map(r => r.version),
+    range,
+  ) as string;
+
+  if (!latestVersion) {
+    throw new NotFoundError(`No ${type} release found that satisfies ${range}`);
+  }
+
+  const latestRelease = releases.find(r => r.version === latestVersion);
+  if (!latestRelease) {
+    throw new NotFoundError(`No ${type} release found that satisfies ${range}`);
+  }
+
+  return latestRelease;
+}
+
 export async function Retrieve(req: Request, res: Response) {
   const query = parseQuery(retrieveQuerySchema, req);
 
@@ -436,59 +523,49 @@ export async function Retrieve(req: Request, res: Response) {
   const systemVersion = toSemverRange(query.systemVersion);
   const skipRollout = appVersion !== "*" || systemVersion !== "*";
 
-  // Get the latest release from S3
-  let remoteRelease: Release;
-  try {
-    remoteRelease = await getReleaseFromS3(query.prerelease, {
-      appVersion,
-      systemVersion,
-      sku: query.sku,
-    });
-  } catch (error) {
-    console.error(error);
-    if (error instanceof NotFoundError) {
-      throw error;
+  // Prereleases are not imported into the DB by the stable sync script.
+  if (query.prerelease) {
+    let remoteRelease: Release;
+    try {
+      remoteRelease = await getReleaseFromS3(query.prerelease, {
+        appVersion,
+        systemVersion,
+        sku: query.sku,
+      });
+    } catch (error) {
+      console.error(error);
+      if (error instanceof NotFoundError) {
+        throw error;
+      }
+      throw new InternalServerError(`Failed to get the latest release from S3: ${error}`);
     }
-    throw new InternalServerError(`Failed to get the latest release from S3: ${error}`);
-  }
 
-  // If the request is for prereleases, ignore the rollout percentage and just return the latest release
-  // This is useful for the OTA updater to get the latest prerelease version
-  // This also prevents us from storing the rollout percentage for prerelease versions
-
-  // If the version isn't a wildcard, we skip the rollout percentage check
-  if (query.prerelease || skipRollout) {
     await enrichWithSigUrls(remoteRelease, query.sku);
     return res.json(remoteRelease);
   }
 
-  // Fetch or create the latest app release
-  const latestAppRelease = await prisma.release.upsert({
-    where: { version_type: { version: remoteRelease.appVersion, type: "app" } },
-    update: {},
-    create: {
-      version: remoteRelease.appVersion,
-      rolloutPercentage: 10,
-      url: remoteRelease.appUrl,
-      type: "app",
-      hash: remoteRelease.appHash,
-    },
-    select: { version: true, url: true, rolloutPercentage: true, hash: true },
-  });
+  // Version-constrained stable requests skip rollout but still read DB metadata.
+  if (skipRollout) {
+    const responseJson = toRelease(
+      dbReleaseToMetadata(
+        await getReleaseByRange("app", query.sku, appVersion),
+        "app",
+        query.sku,
+        appVersion,
+      ),
+      dbReleaseToMetadata(
+        await getReleaseByRange("system", query.sku, systemVersion),
+        "system",
+        query.sku,
+        systemVersion,
+      ),
+    );
+    addStableSigUrls(responseJson);
+    return res.json(responseJson);
+  }
 
-  // Fetch or create the latest system release
-  const latestSystemRelease = await prisma.release.upsert({
-    where: { version_type: { version: remoteRelease.systemVersion, type: "system" } },
-    update: {},
-    create: {
-      version: remoteRelease.systemVersion,
-      rolloutPercentage: 10,
-      url: remoteRelease.systemUrl,
-      type: "system",
-      hash: remoteRelease.systemHash,
-    },
-    select: { version: true, url: true, rolloutPercentage: true, hash: true },
-  });
+  const latestAppRelease = await getLatestRelease("app", query.sku);
+  const latestSystemRelease = await getLatestRelease("system", query.sku);
 
   /*
     Return the latest release if forceUpdate is true, bypassing rollout rules.
@@ -497,12 +574,21 @@ export async function Retrieve(req: Request, res: Response) {
   */
   let responseJson: Release;
   if (query.forceUpdate) {
-    responseJson = toRelease(latestAppRelease, latestSystemRelease);
+    responseJson = toRelease(
+      dbReleaseToMetadata(latestAppRelease, "app", query.sku),
+      dbReleaseToMetadata(latestSystemRelease, "system", query.sku),
+    );
   } else {
-    const defaultAppRelease = await getDefaultRelease("app");
-    const defaultSystemRelease = await getDefaultRelease("system");
+    const defaultAppRelease = await getDefaultRelease("app", query.sku);
+    const defaultSystemRelease = await getDefaultRelease("system", query.sku);
+    const defaultSystemMetadata = dbReleaseToMetadata(
+      defaultSystemRelease,
+      "system",
+      query.sku,
+    );
+    const defaultAppMetadata = dbReleaseToMetadata(defaultAppRelease, "app", query.sku);
 
-    responseJson = toRelease(defaultAppRelease, defaultSystemRelease);
+    responseJson = toRelease(defaultAppMetadata, defaultSystemMetadata);
 
     if (
       await isDeviceEligibleForLatestRelease(
@@ -510,7 +596,10 @@ export async function Retrieve(req: Request, res: Response) {
         query.deviceId,
       )
     ) {
-      setAppRelease(responseJson, latestAppRelease);
+      setAppRelease(
+        responseJson,
+        dbReleaseToMetadata(latestAppRelease, "app", query.sku),
+      );
     }
 
     if (
@@ -519,13 +608,15 @@ export async function Retrieve(req: Request, res: Response) {
         query.deviceId,
       )
     ) {
-      setSystemRelease(responseJson, latestSystemRelease);
+      setSystemRelease(
+        responseJson,
+        dbReleaseToMetadata(latestSystemRelease, "system", query.sku),
+      );
     }
   }
 
-  // DB records don't store sigUrl. Resolve from S3 for the versions being served.
-  // The device requires sigUrl for stable (non-prerelease) GPG signature verification.
-  await enrichWithSigUrls(responseJson, query.sku);
+  // Stable responses are DB-backed; signatures live next to the selected artifacts.
+  addStableSigUrls(responseJson);
 
   return res.json(responseJson);
 }

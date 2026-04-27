@@ -43,14 +43,26 @@ model TurnActivity {
 }
 
 model Release {
-  id                BigInt   @id @default(autoincrement())
+  id                BigInt            @id @default(autoincrement())
   version           String
-  rolloutPercentage Int      @default(10) // 10% of users
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  rolloutPercentage Int               @default(10) // 10% of users
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
   url               String
-  type              String   @default("app") // "app" or "system"
+  type              String            @default("app") // "app" or "system"
   hash              String
+  artifacts         ReleaseArtifact[]
 
   @@unique([version, type])
+}
+
+model ReleaseArtifact {
+  id             BigInt   @id @default(autoincrement())
+  release        Release  @relation(fields: [releaseId], references: [id], onDelete: Cascade)
+  releaseId      BigInt
+  url            String
+  hash           String
+  compatibleSkus String[]
+
+  @@unique([releaseId, url])
 }

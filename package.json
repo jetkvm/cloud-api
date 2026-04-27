@@ -11,6 +11,7 @@
     "prisma-dev-migrate": "prisma migrate dev",
     "prisma-migrate": "prisma migrate deploy",
     "seed": "NODE_ENV=development node -r ts-node/register --env-file=.env.development ./scripts/seed.ts",
+    "sync-releases": "NODE_ENV=development node -r ts-node/register --env-file=.env.development ./scripts/sync-releases.ts",
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",

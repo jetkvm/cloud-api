@@ -24,6 +24,11 @@ export const s3Mock = mockClient(S3Client);
 // Create a test Prisma client
 export const testPrisma = new PrismaClient();
 
+type ReleaseType = "app" | "system";
+
+const APP_COMPATIBLE_SKUS = ["jetkvm-v2", "jetkvm-v2-sdmmc"];
+const SYSTEM_COMPATIBLE_SKUS = ["jetkvm-v2"];
+
 function ensureSafeTestDatabase() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -45,7 +50,15 @@ function ensureSafeTestDatabase() {
 }
 
 // Seed data for releases
-export const seedReleases = [
+interface SeedRelease {
+  version: string;
+  type: ReleaseType;
+  rolloutPercentage: number;
+  url: string;
+  hash: string;
+}
+
+export const seedReleases: SeedRelease[] = [
   // App releases
   {
     version: "1.0.0",
@@ -92,9 +105,35 @@ export const seedReleases = [
   },
 ];
 
+function compatibleSkusForSeedRelease(type: ReleaseType): string[] {
+  return type === "app" ? APP_COMPATIBLE_SKUS : SYSTEM_COMPATIBLE_SKUS;
+}
+
+type SeedReleaseArtifactSource = Pick<SeedRelease, "type" | "url" | "hash">;
+
+function seedReleaseArtifactData(releaseId: bigint, release: SeedReleaseArtifactSource) {
+  return {
+    releaseId,
+    url: release.url,
+    hash: release.hash,
+    compatibleSkus: compatibleSkusForSeedRelease(release.type),
+  };
+}
+
+async function createSeedRelease(release: SeedRelease): Promise<void> {
+  const createdRelease = await testPrisma.release.create({ data: release });
+  await testPrisma.releaseArtifact.create({
+    data: seedReleaseArtifactData(createdRelease.id, release),
+  });
+}
+
 // Helper to set rollout percentage for a specific version
-export async function setRollout(version: string, type: "app" | "system", percentage: number) {
-  await testPrisma.release.upsert({
+export async function setRollout(
+  version: string,
+  type: ReleaseType,
+  percentage: number,
+): Promise<void> {
+  const release = await testPrisma.release.upsert({
     where: { version_type: { version, type } },
     update: { rolloutPercentage: percentage },
     create: {
@@ -104,6 +143,16 @@ export async function setRollout(version: string, type: "app" | "system", percen
       url: `https://cdn.test.com/${type}/${version}/${type === "app" ? "jetkvm_app" : "system.tar"}`,
       hash: `test-hash-${version}-${type}`,
     },
+  });
+
+  const artifactData = seedReleaseArtifactData(release.id, release);
+  await testPrisma.releaseArtifact.upsert({
+    where: { releaseId_url: { releaseId: release.id, url: release.url } },
+    update: {
+      hash: artifactData.hash,
+      compatibleSkus: artifactData.compatibleSkus,
+    },
+    create: artifactData,
   });
 }
 
@@ -124,10 +173,15 @@ export async function resetToSeedData() {
 
   // Reset seed releases to original values
   for (const release of seedReleases) {
-    await testPrisma.release.upsert({
+    const dbRelease = await testPrisma.release.upsert({
       where: { version_type: { version: release.version, type: release.type } },
       update: { rolloutPercentage: release.rolloutPercentage, url: release.url, hash: release.hash },
       create: release,
+    });
+
+    await testPrisma.releaseArtifact.deleteMany({ where: { releaseId: dbRelease.id } });
+    await testPrisma.releaseArtifact.create({
+      data: seedReleaseArtifactData(dbRelease.id, release),
     });
   }
 }
@@ -159,11 +213,12 @@ beforeAll(async () => {
   await testPrisma.$connect();
 
   // Clean up existing releases
+  await testPrisma.releaseArtifact.deleteMany({});
   await testPrisma.release.deleteMany({});
 
   // Seed the database with test releases
   for (const release of seedReleases) {
-    await testPrisma.release.create({ data: release });
+    await createSeedRelease(release);
   }
 });
 
@@ -176,6 +231,7 @@ afterEach(() => {
 
 afterAll(async () => {
   // Clean up after all tests
+  await testPrisma.releaseArtifact.deleteMany({});
   await testPrisma.release.deleteMany({});
   await testPrisma.$disconnect();
 });

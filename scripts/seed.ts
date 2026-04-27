@@ -2,6 +2,15 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+type ReleaseType = "app" | "system";
+
+const APP_COMPATIBLE_SKUS = ["jetkvm-v2", "jetkvm-v2-sdmmc"];
+const SYSTEM_COMPATIBLE_SKUS = ["jetkvm-v2"];
+
+function compatibleSkusForRelease(type: ReleaseType): string[] {
+  return type === "app" ? APP_COMPATIBLE_SKUS : SYSTEM_COMPATIBLE_SKUS;
+}
+
 // Development test users
 const users = [
   { googleId: "dev-user-1", email: "dev@example.com", picture: null },
@@ -23,7 +32,16 @@ const turnActivities = [
 ];
 
 // Production release snapshot
-const releases = [
+interface SeedRelease {
+  version: string;
+  type: ReleaseType;
+  rolloutPercentage: number;
+  url: string;
+  hash: string;
+  createdAt: Date;
+}
+
+const releases: SeedRelease[] = [
   { version: "0.2.6", type: "app", rolloutPercentage: 100, url: "https://update.jetkvm.com/app/0.2.6/jetkvm_app", hash: "4b121195aa9dae9bd4ae7d1e69f49383510f9552cd9a9edd1a9f92c71e128f9c", createdAt: new Date("2024-09-27T11:41:59.669Z") },
   { version: "0.2.7", type: "app", rolloutPercentage: 100, url: "https://update.jetkvm.com/app/0.2.7/jetkvm_app", hash: "2dbcc5a7bc1cc7196b458e633f654b521351eda66764b7a6d6a04f60a17347ca", createdAt: new Date("2024-09-27T11:59:32.279Z") },
   { version: "0.1.7", type: "system", rolloutPercentage: 100, url: "https://update.jetkvm.com/system/0.1.7/system.tar", hash: "194287cf911801852cdc57aa9e8c9cfa59bf6c27feb5ae260f35bcfa895789e3", createdAt: new Date("2024-10-01T20:00:03.780Z") },
@@ -154,7 +172,20 @@ async function seedReleases(): Promise<void> {
     return;
   }
 
-  await prisma.release.createMany({ data: releases });
+  for (const release of releases) {
+    await prisma.release.create({
+      data: {
+        ...release,
+        artifacts: {
+          create: {
+            url: release.url,
+            hash: release.hash,
+            compatibleSkus: compatibleSkusForRelease(release.type),
+          },
+        },
+      },
+    });
+  }
   console.log(`[seed] Release: created ${releases.length} records`);
 }
 
