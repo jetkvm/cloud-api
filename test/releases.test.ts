@@ -489,7 +489,7 @@ describe("Retrieve handler", () => {
       });
     });
 
-    it("does not fall back when the latest release lacks a compatible artifact", async () => {
+    it("keeps the default when the latest release lacks a compatible artifact for an in-bucket device", async () => {
       await createDbRelease("app", "3.3.0", 100, [
         {
           ...releaseArtifact("app", "3.3.0", DEFAULT_SKU),
@@ -506,19 +506,28 @@ describe("Retrieve handler", () => {
         releaseArtifact("system", "3.3.0", DEFAULT_SKU, "system-default-hash"),
         releaseArtifact("system", "3.3.0", SDMMC_SKU, "system-sdmmc-hash"),
       ]);
+      // system 3.3.1 ships only with the default-SKU artifact — no sdmmc binary.
       await createDbRelease("system", "3.3.1", 100);
 
-      await expect(
-        Retrieve(
-          createMockRequest({
-            deviceId: "sdmmc-compatible-fallback-device",
-            sku: SDMMC_SKU,
-          }),
-          createMockResponse(),
-        ),
-      ).rejects.toThrow(
-        'Version 3.3.1 predates SKU support and cannot serve SKU "jetkvm-v2-sdmmc"',
+      // Every device is in-bucket at 100% rollout, so this exercises the
+      // upgrade path. The request must keep the default 3.3.0 system release
+      // rather than 404 because 3.3.1 has no sdmmc binary.
+      const res = createMockResponse();
+      await Retrieve(
+        createMockRequest({
+          deviceId: "sdmmc-compatible-fallback-device",
+          sku: SDMMC_SKU,
+        }),
+        res,
       );
+
+      expect(jsonBody(res)).toMatchObject({
+        appVersion: "3.3.1",
+        appUrl: artifactUrl("app", "3.3.1"),
+        systemVersion: "3.3.0",
+        systemUrl: artifactUrl("system", "3.3.0", SDMMC_SKU),
+        systemHash: "system-sdmmc-hash",
+      });
     });
 
     it("does not discover or create stable releases from S3", async () => {

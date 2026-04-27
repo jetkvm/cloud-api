@@ -617,26 +617,30 @@ export async function Retrieve(req: Request, res: Response) {
 
   // Background update checks follow rollout percentages so new releases roll
   // out gradually. Devices outside the bucket fall back to the default (the
-  // newest 100%-rolled-out release).
+  // newest 100%-rolled-out release). If the latest release lacks a compatible
+  // artifact for this SKU (e.g. a SKU-specific build hasn't shipped yet) we
+  // silently keep the default rather than 404 the whole request.
   const responseJson = toRelease(
     dbReleaseToMetadata(defaultAppRelease, query.sku),
     dbReleaseToMetadata(defaultSystemRelease, query.sku),
   );
 
   if (
-    await isDeviceEligibleForLatestRelease(
+    latestAppRelease.artifacts.length > 0 &&
+    (await isDeviceEligibleForLatestRelease(
       latestAppRelease.rolloutPercentage,
       query.deviceId,
-    )
+    ))
   ) {
     setAppRelease(responseJson, dbReleaseToMetadata(latestAppRelease, query.sku));
   }
 
   if (
-    await isDeviceEligibleForLatestRelease(
+    latestSystemRelease.artifacts.length > 0 &&
+    (await isDeviceEligibleForLatestRelease(
       latestSystemRelease.rolloutPercentage,
       query.deviceId,
-    )
+    ))
   ) {
     setSystemRelease(responseJson, dbReleaseToMetadata(latestSystemRelease, query.sku));
   }
