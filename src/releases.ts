@@ -391,6 +391,7 @@ function toRelease(
 
 function addStableSigUrls(release: Release): void {
   if (release.appUrl) release.appSigUrl = `${release.appUrl}.sig`;
+  if (release.systemUrl) release.systemSigUrl = `${release.systemUrl}.sig`;
 }
 
 async function getReleaseFromS3(
@@ -426,6 +427,13 @@ function compatibleArtifactSelect(sku: string) {
   };
 }
 
+function compatibleReleaseWhere(type: ReleaseType, sku: string) {
+  return {
+    type,
+    artifacts: { some: { compatibleSkus: { has: sku } } },
+  } as const;
+}
+
 function compatibleReleaseSelect(sku: string) {
   return {
     version: true,
@@ -457,12 +465,14 @@ function dbReleaseToMetadata(
 
 async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
   const rolledOutReleases = await prisma.release.findMany({
-    where: { rolloutPercentage: 100, type },
+    where: { ...compatibleReleaseWhere(type, sku), rolloutPercentage: 100 },
     select: compatibleReleaseSelect(sku),
   });
 
   if (rolledOutReleases.length === 0) {
-    throw new InternalServerError(`No default release found for type ${type}`);
+    throw new InternalServerError(
+      `No default release found for type ${type} and SKU "${sku}"`,
+    );
   }
 
   // Get the latest default version from the rolled out releases
@@ -475,7 +485,9 @@ async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRele
   const latestDefaultRelease = rolledOutReleases.find(r => r.version === latestVersion);
 
   if (!latestDefaultRelease) {
-    throw new InternalServerError(`No default release found for type ${type}`);
+    throw new InternalServerError(
+      `No default release found for type ${type} and SKU "${sku}"`,
+    );
   }
 
   return latestDefaultRelease;
@@ -491,12 +503,12 @@ async function getReleaseByRange(
   range: string,
 ): Promise<DbRelease> {
   const releases = await prisma.release.findMany({
-    where: { type },
+    where: compatibleReleaseWhere(type, sku),
     select: compatibleReleaseSelect(sku),
   });
 
   if (releases.length === 0) {
-    throw new NotFoundError(`No release found for type ${type}`);
+    throw new NotFoundError(`No release found for type ${type} and SKU "${sku}"`);
   }
 
   const latestVersion = semver.maxSatisfying(
