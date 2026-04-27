@@ -499,14 +499,23 @@ async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRele
     );
   }
 
-  // Get the latest default version from the rolled out releases
+  // Only consider releases that ship a binary for this SKU. Without this,
+  // the newest 100%-rolled-out release wins even if it has no compatible
+  // artifact, masking older releases that do.
+  const compatibleReleases = rolledOutReleases.filter(r => r.artifacts.length > 0);
+
+  if (compatibleReleases.length === 0) {
+    throw new NotFoundError(
+      `No default ${type} release available for SKU "${sku}"`,
+    );
+  }
+
   const latestVersion = semver.maxSatisfying(
-    rolledOutReleases.map(r => r.version),
+    compatibleReleases.map(r => r.version),
     "*",
   ) as string;
 
-  // Get the release with the latest default version
-  const latestDefaultRelease = rolledOutReleases.find(r => r.version === latestVersion);
+  const latestDefaultRelease = compatibleReleases.find(r => r.version === latestVersion);
 
   if (!latestDefaultRelease) {
     throw new InternalServerError(
@@ -598,10 +607,13 @@ export async function Retrieve(req: Request, res: Response) {
     return res.json(responseJson);
   }
 
-  const latestAppRelease = await getLatestRelease("app", query.sku);
-  const latestSystemRelease = await getLatestRelease("system", query.sku);
-  const defaultAppRelease = await getDefaultRelease("app", query.sku);
-  const defaultSystemRelease = await getDefaultRelease("system", query.sku);
+  const [latestAppRelease, latestSystemRelease, defaultAppRelease, defaultSystemRelease] =
+    await Promise.all([
+      getLatestRelease("app", query.sku),
+      getLatestRelease("system", query.sku),
+      getDefaultRelease("app", query.sku),
+      getDefaultRelease("system", query.sku),
+    ]);
 
   // Background update checks follow rollout percentages so new releases roll
   // out gradually. Devices outside the bucket fall back to the default (the
