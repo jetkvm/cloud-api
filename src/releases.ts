@@ -52,7 +52,7 @@ type LatestQuery = z.infer<typeof latestQuerySchema>;
 
 /**
  * Schema for the main Retrieve endpoint.
- * Requires deviceId and includes version constraints and forceUpdate flag.
+ * Requires deviceId and includes version constraints.
  */
 const retrieveQuerySchema = z.object({
   deviceId: z.string({ error: "Device ID is required" }).min(1, "Device ID is required"),
@@ -60,7 +60,6 @@ const retrieveQuerySchema = z.object({
   appVersion: queryString(),
   systemVersion: queryString(),
   sku: querySku(),
-  forceUpdate: queryBoolean(),
 });
 
 type RetrieveQuery = z.infer<typeof retrieveQuerySchema>;
@@ -601,52 +600,35 @@ export async function Retrieve(req: Request, res: Response) {
 
   const latestAppRelease = await getLatestRelease("app", query.sku);
   const latestSystemRelease = await getLatestRelease("system", query.sku);
+  const defaultAppRelease = await getDefaultRelease("app", query.sku);
+  const defaultSystemRelease = await getDefaultRelease("system", query.sku);
 
-  /*
-    Return the latest release if forceUpdate is true, bypassing rollout rules.
-    This occurs when a user manually checks for updates in the app UI.
-    Background update checks follow the normal rollout percentage rules, to ensure controlled, gradual deployment of updates.
-  */
-  let responseJson: Release;
-  if (query.forceUpdate) {
-    responseJson = toRelease(
-      dbReleaseToMetadata(latestAppRelease, query.sku),
-      dbReleaseToMetadata(latestSystemRelease, query.sku),
-    );
-  } else {
-    const defaultAppRelease = await getDefaultRelease("app", query.sku);
-    const defaultSystemRelease = await getDefaultRelease("system", query.sku);
-    const defaultSystemMetadata = dbReleaseToMetadata(defaultSystemRelease, query.sku);
-    const defaultAppMetadata = dbReleaseToMetadata(defaultAppRelease, query.sku);
+  // Background update checks follow rollout percentages so new releases roll
+  // out gradually. Devices outside the bucket fall back to the default (the
+  // newest 100%-rolled-out release).
+  const responseJson = toRelease(
+    dbReleaseToMetadata(defaultAppRelease, query.sku),
+    dbReleaseToMetadata(defaultSystemRelease, query.sku),
+  );
 
-    responseJson = toRelease(defaultAppMetadata, defaultSystemMetadata);
-
-    if (
-      await isDeviceEligibleForLatestRelease(
-        latestAppRelease.rolloutPercentage,
-        query.deviceId,
-      )
-    ) {
-      setAppRelease(
-        responseJson,
-        dbReleaseToMetadata(latestAppRelease, query.sku),
-      );
-    }
-
-    if (
-      await isDeviceEligibleForLatestRelease(
-        latestSystemRelease.rolloutPercentage,
-        query.deviceId,
-      )
-    ) {
-      setSystemRelease(
-        responseJson,
-        dbReleaseToMetadata(latestSystemRelease, query.sku),
-      );
-    }
+  if (
+    await isDeviceEligibleForLatestRelease(
+      latestAppRelease.rolloutPercentage,
+      query.deviceId,
+    )
+  ) {
+    setAppRelease(responseJson, dbReleaseToMetadata(latestAppRelease, query.sku));
   }
 
-  // Stable responses are DB-backed; signatures live next to the selected artifacts.
+  if (
+    await isDeviceEligibleForLatestRelease(
+      latestSystemRelease.rolloutPercentage,
+      query.deviceId,
+    )
+  ) {
+    setSystemRelease(responseJson, dbReleaseToMetadata(latestSystemRelease, query.sku));
+  }
+
   await addStableSigUrls(responseJson);
 
   return res.json(responseJson);

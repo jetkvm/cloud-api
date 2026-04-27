@@ -6,7 +6,7 @@ LOCAL_BASE="${LOCAL_BASE:-http://localhost:3000}"
 PROD_BASE="${PROD_BASE:-https://api.jetkvm.com}"
 
 DEFAULT_DEVICE_IDS=("compare-device-1")
-DEFAULT_SKUS=("__omit__" "jetkvm-v2" "jetkvm-2" "jetkvm-3")
+DEFAULT_SKUS=("__omit__" "jetkvm-v2" "jetkvm-v2-sdmmc")
 TRISTATE_VALUES=("__omit__" "false" "true")
 
 TMP_DIR="$(mktemp -d)"
@@ -696,7 +696,7 @@ PRERELEASE_SYSTEM_VERSION="${prerelease_versions[1]:-}"
 mapfile -t APP_VERSION_VALUES < <(build_value_set "$STABLE_APP_VERSION" "$PRERELEASE_APP_VERSION")
 mapfile -t SYSTEM_VERSION_VALUES < <(build_value_set "$STABLE_SYSTEM_VERSION" "$PRERELEASE_SYSTEM_VERSION")
 
-TOTAL_CASES=$(( ${#DEVICE_IDS[@]} * ${#TRISTATE_VALUES[@]} * ${#TRISTATE_VALUES[@]} * ${#APP_VERSION_VALUES[@]} * ${#SYSTEM_VERSION_VALUES[@]} * ${#DEFAULT_SKUS[@]} + ${#TRISTATE_VALUES[@]} * ${#DEFAULT_SKUS[@]} * 2 ))
+TOTAL_CASES=$(( ${#DEVICE_IDS[@]} * ${#TRISTATE_VALUES[@]} * ${#APP_VERSION_VALUES[@]} * ${#SYSTEM_VERSION_VALUES[@]} * ${#DEFAULT_SKUS[@]} + ${#TRISTATE_VALUES[@]} * ${#DEFAULT_SKUS[@]} * 2 ))
 declare -A JOB_RESULT_FILES=()
 log "  total cases: $TOTAL_CASES"
 log "  parallel: $MAX_PARALLEL"
@@ -705,21 +705,19 @@ log
 
 for device_id in "${DEVICE_IDS[@]}"; do
   for prerelease in "${TRISTATE_VALUES[@]}"; do
-    for force_update in "${TRISTATE_VALUES[@]}"; do
-      for app_version in "${APP_VERSION_VALUES[@]}"; do
-        for system_version in "${SYSTEM_VERSION_VALUES[@]}"; do
-          for sku in "${DEFAULT_SKUS[@]}"; do
-            if stop_requested; then
-              break 6
-            fi
-            query_keys=("deviceId" "prerelease" "forceUpdate" "appVersion" "systemVersion" "sku")
-            query_values=("$device_id" "$prerelease" "$force_update" "$app_version" "$system_version" "$sku")
-            run_case \
-              "GET /releases deviceId=$device_id prerelease=$prerelease forceUpdate=$force_update appVersion=$app_version systemVersion=$system_version sku=$sku" \
-              "/releases" \
-              query_keys \
-              query_values
-          done
+    for app_version in "${APP_VERSION_VALUES[@]}"; do
+      for system_version in "${SYSTEM_VERSION_VALUES[@]}"; do
+        for sku in "${DEFAULT_SKUS[@]}"; do
+          if stop_requested; then
+            break 5
+          fi
+          query_keys=("deviceId" "prerelease" "appVersion" "systemVersion" "sku")
+          query_values=("$device_id" "$prerelease" "$app_version" "$system_version" "$sku")
+          run_case \
+            "GET /releases deviceId=$device_id prerelease=$prerelease appVersion=$app_version systemVersion=$system_version sku=$sku" \
+            "/releases" \
+            query_keys \
+            query_values
         done
       done
     done

@@ -365,29 +365,6 @@ describe("Retrieve handler", () => {
       });
     });
 
-    it("serves the latest DB release when forceUpdate bypasses rollout", async () => {
-      await createDbReleasePair("2.2.0", 100);
-      await createDbReleasePair("2.3.0", 0);
-      mockArtifactSig("app", "2.3.0");
-      mockArtifactSig("system", "2.3.0");
-
-      const res = createMockResponse();
-
-      await Retrieve(
-        createMockRequest({ deviceId: "manual-update-device", forceUpdate: "true" }),
-        res,
-      );
-
-      expect(jsonBody(res)).toMatchObject({
-        appVersion: "2.3.0",
-        appUrl: artifactUrl("app", "2.3.0"),
-        appSigUrl: `${artifactUrl("app", "2.3.0")}.sig`,
-        systemVersion: "2.3.0",
-        systemUrl: artifactUrl("system", "2.3.0"),
-        systemSigUrl: `${artifactUrl("system", "2.3.0")}.sig`,
-      });
-    });
-
     it("applies app and system rollout independently", async () => {
       await createDbReleasePair("2.4.0", 100);
       await createDbRelease("app", "2.5.0", 100);
@@ -464,7 +441,6 @@ describe("Retrieve handler", () => {
         createMockRequest({
           deviceId: "sdmmc-device",
           sku: SDMMC_SKU,
-          forceUpdate: "true",
         }),
         res,
       );
@@ -502,7 +478,6 @@ describe("Retrieve handler", () => {
           createMockRequest({
             deviceId: "sdmmc-compatible-fallback-device",
             sku: SDMMC_SKU,
-            forceUpdate: "true",
           }),
           createMockResponse(),
         ),
@@ -523,7 +498,7 @@ describe("Retrieve handler", () => {
       const res = createMockResponse();
 
       await Retrieve(
-        createMockRequest({ deviceId: "db-only-device", forceUpdate: "true" }),
+        createMockRequest({ deviceId: "db-only-device" }),
         res,
       );
 
