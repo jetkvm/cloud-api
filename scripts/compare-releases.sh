@@ -254,17 +254,24 @@ right_keys = set(right.keys())
 if left_keys != {"name", "message"} or right_keys != {"name", "message"}:
     raise SystemExit(1)
 
-version_pattern = re.compile(
-    r'^(Version )(.+?)( predates SKU support and cannot serve SKU "[^"]+")$'
-)
+# Both messages mean "no release compatible with this SKU is available";
+# the wording differs across deploys but the device sees the same 404.
+no_compat_patterns = [
+    re.compile(r'^Version .+ predates SKU support and cannot serve SKU "([^"]+)"$'),
+    re.compile(r'^No default (?:app|system) release available for SKU "([^"]+)"$'),
+]
+
+def canonicalize(message):
+    for pattern in no_compat_patterns:
+        match = pattern.match(message)
+        if match:
+            return f'<no-compat-release sku="{match.group(1)}">'
+    return message
 
 left_message = left.get("message", "")
 right_message = right.get("message", "")
 
-left_normalized = version_pattern.sub(r"\1<version>\3", left_message)
-right_normalized = version_pattern.sub(r"\1<version>\3", right_message)
-
-if left_normalized == right_normalized:
+if canonicalize(left_message) == canonicalize(right_message):
     raise SystemExit(0)
 
 raise SystemExit(1)
