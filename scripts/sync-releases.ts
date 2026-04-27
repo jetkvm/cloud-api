@@ -35,8 +35,10 @@ function artifactName(type: ReleaseType): string {
   return type === "app" ? "jetkvm_app" : "system.tar";
 }
 
-function legacyCompatibleSkus(type: ReleaseType, skus: string[]): string[] {
-  return type === "app" ? skus : [DEFAULT_SKU];
+// Pre-SKU artifacts (no skus/ folder) are only safe on the original jetkvm-v2.
+// Other SKUs require an explicit skus/<sku>/ upload to opt in.
+function legacyCompatibleSkus(): string[] {
+  return [DEFAULT_SKU];
 }
 
 function isS3NotFound(error: any): boolean {
@@ -137,7 +139,7 @@ export async function collectReleaseArtifacts(
       {
         url: `${config.baseUrl}/${artifactPath}`,
         hash,
-        compatibleSkus: legacyCompatibleSkus(type, skus),
+        compatibleSkus: legacyCompatibleSkus(),
       },
     ];
   }
@@ -192,40 +194,39 @@ async function syncRelease(
     return;
   }
 
-  const primaryArtifact = artifacts[0];
-  const release = await prisma.release.upsert({
+  // Sync only registers brand-new releases. Existing rows (rollout state, URLs,
+  // artifact compatibility) are left untouched — backfills/repairs are handled
+  // by one-off scripts so a routine sync run can never rewrite production data.
+  const existing = await prisma.release.findUnique({
     where: { version_type: { version, type } },
-    update: {
-      url: primaryArtifact.url,
-      hash: primaryArtifact.hash,
-    },
-    create: {
+    select: { id: true },
+  });
+
+  if (existing) {
+    console.log(`[sync-releases] ${type} ${version}: already synced, skipping`);
+    return;
+  }
+
+  const primaryArtifact = artifacts[0];
+  await prisma.release.create({
+    data: {
       version,
       type,
       rolloutPercentage: 10,
       url: primaryArtifact.url,
       hash: primaryArtifact.hash,
+      artifacts: {
+        create: artifacts.map(artifact => ({
+          url: artifact.url,
+          hash: artifact.hash,
+          compatibleSkus: artifact.compatibleSkus,
+        })),
+      },
     },
   });
 
-  for (const artifact of artifacts) {
-    await prisma.releaseArtifact.upsert({
-      where: { releaseId_url: { releaseId: release.id, url: artifact.url } },
-      update: {
-        hash: artifact.hash,
-        compatibleSkus: artifact.compatibleSkus,
-      },
-      create: {
-        releaseId: release.id,
-        url: artifact.url,
-        hash: artifact.hash,
-        compatibleSkus: artifact.compatibleSkus,
-      },
-    });
-  }
-
   console.log(
-    `[sync-releases] ${type} ${version}: synced ${artifacts.length} artifact(s)`,
+    `[sync-releases] ${type} ${version}: created with ${artifacts.length} artifact(s)`,
   );
 }
 

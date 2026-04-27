@@ -59,7 +59,7 @@ describe("sync-releases script", () => {
       .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
   });
 
-  it("marks legacy app artifacts compatible with all known SKUs", async () => {
+  it("marks legacy app artifacts compatible with the default SKU only", async () => {
     mockS3HashFile("app", "9.9.1", "legacy-app-hash");
 
     const artifacts = await collectReleaseArtifacts(
@@ -73,7 +73,7 @@ describe("sync-releases script", () => {
       {
         url: "https://cdn.test.com/app/9.9.1/jetkvm_app",
         hash: "legacy-app-hash",
-        compatibleSkus: [DEFAULT_SKU, SDMMC_SKU],
+        compatibleSkus: [DEFAULT_SKU],
       },
     ]);
   });
@@ -116,9 +116,11 @@ describe("sync-releases script", () => {
     ]);
   });
 
-  it("syncs stable S3 artifacts into DB without changing existing rollout", async () => {
+  it("creates new releases at 10% with their S3 artifacts and skips already-synced versions", async () => {
     const version = "9.9.4";
 
+    // Pre-existing system row simulates a release the migration (or a prior
+    // sync) already wrote. Sync must leave it completely untouched.
     await testPrisma.release.create({
       data: {
         version,
@@ -146,35 +148,30 @@ describe("sync-releases script", () => {
     });
     const systemRelease = await testPrisma.release.findUniqueOrThrow({
       where: { version_type: { version, type: "system" } },
-      include: { artifacts: { orderBy: { url: "asc" } } },
+      include: { artifacts: true },
     });
     const prerelease = await testPrisma.release.findUnique({
       where: { version_type: { version: "10.0.0-beta.1", type: "app" } },
     });
 
+    // App release is new — created at 10% rollout with a single legacy-compatible artifact.
     expect(appRelease.rolloutPercentage).toBe(10);
     expect(appRelease.artifacts).toEqual([
       expect.objectContaining({
         url: `https://cdn.test.com/app/${version}/jetkvm_app`,
         hash: "app-hash",
-        compatibleSkus: [DEFAULT_SKU, SDMMC_SKU],
+        compatibleSkus: [DEFAULT_SKU],
       }),
     ]);
+
+    // System release already existed — sync must not touch rollout, URL, hash,
+    // or attach any new artifacts (those are handled by one-off scripts).
     expect(systemRelease.rolloutPercentage).toBe(77);
-    expect(systemRelease.artifacts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          url: `https://cdn.test.com/system/${version}/skus/${DEFAULT_SKU}/system.tar`,
-          hash: "system-hash-v2",
-          compatibleSkus: [DEFAULT_SKU],
-        }),
-        expect.objectContaining({
-          url: `https://cdn.test.com/system/${version}/skus/${SDMMC_SKU}/system.tar`,
-          hash: "system-hash-sdmmc",
-          compatibleSkus: [SDMMC_SKU],
-        }),
-      ]),
-    );
+    expect(systemRelease.url).toBe("https://cdn.test.com/old-system.tar");
+    expect(systemRelease.hash).toBe("old-system-hash");
+    expect(systemRelease.artifacts).toEqual([]);
+
+    // Prereleases are filtered out by listStableVersions.
     expect(prerelease).toBeNull();
   });
 });

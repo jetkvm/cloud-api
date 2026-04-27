@@ -10,15 +10,15 @@ CREATE TABLE "ReleaseArtifact" (
 );
 
 -- Backfill one artifact for every existing release.
+-- Pre-SKU artifacts only target the original jetkvm-v2 hardware; future SKUs
+-- (e.g. jetkvm-v2-sdmmc) require explicit SKU-folder uploads to be registered
+-- by scripts/sync-releases.ts.
 INSERT INTO "ReleaseArtifact" ("releaseId", "url", "hash", "compatibleSkus")
 SELECT
     "id",
     "url",
     "hash",
-    CASE
-        WHEN "type" = 'app' THEN ARRAY['jetkvm-v2', 'jetkvm-v2-sdmmc']::TEXT[]
-        ELSE ARRAY['jetkvm-v2']::TEXT[]
-    END
+    ARRAY['jetkvm-v2']::TEXT[]
 FROM "Release";
 
 -- CreateIndex

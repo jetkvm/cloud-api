@@ -26,8 +26,9 @@ export const testPrisma = new PrismaClient();
 
 type ReleaseType = "app" | "system";
 
-const APP_COMPATIBLE_SKUS = ["jetkvm-v2", "jetkvm-v2-sdmmc"];
-const SYSTEM_COMPATIBLE_SKUS = ["jetkvm-v2"];
+// Pre-SKU artifacts are jetkvm-v2 only; future SKUs need explicit
+// skus/<sku>/ uploads, registered via scripts/sync-releases.ts.
+const LEGACY_COMPATIBLE_SKUS = ["jetkvm-v2"];
 
 function ensureSafeTestDatabase() {
   const databaseUrl = process.env.DATABASE_URL;
@@ -105,8 +106,8 @@ export const seedReleases: SeedRelease[] = [
   },
 ];
 
-function compatibleSkusForSeedRelease(type: ReleaseType): string[] {
-  return type === "app" ? APP_COMPATIBLE_SKUS : SYSTEM_COMPATIBLE_SKUS;
+function compatibleSkusForSeedRelease(_type: ReleaseType): string[] {
+  return LEGACY_COMPATIBLE_SKUS;
 }
 
 type SeedReleaseArtifactSource = Pick<SeedRelease, "type" | "url" | "hash">;
