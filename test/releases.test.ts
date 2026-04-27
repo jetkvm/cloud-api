@@ -175,13 +175,22 @@ function artifactFileName(type: ReleaseType) {
   return type === "app" ? "jetkvm_app" : "system.tar";
 }
 
-function artifactUrl(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
+function artifactPath(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
   const fileName = artifactFileName(type);
-  const path =
-    sku === DEFAULT_SKU
-      ? `${type}/${version}/${fileName}`
-      : `${type}/${version}/skus/${sku}/${fileName}`;
-  return `https://cdn.test.com/${path}`;
+  if (sku === DEFAULT_SKU) {
+    return `${type}/${version}/${fileName}`;
+  }
+  return `${type}/${version}/skus/${sku}/${fileName}`;
+}
+
+function artifactUrl(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
+  return `https://cdn.test.com/${artifactPath(type, version, sku)}`;
+}
+
+function mockArtifactSig(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
+  s3Mock
+    .on(HeadObjectCommand, { Key: `${artifactPath(type, version, sku)}.sig` })
+    .resolves({});
 }
 
 function releaseArtifact(
@@ -337,6 +346,8 @@ describe("Retrieve handler", () => {
     it("serves the latest fully rolled out release on background checks", async () => {
       await createDbReleasePair("2.0.0", 100);
       await createDbReleasePair("2.1.0", 0);
+      mockArtifactSig("app", "2.0.0");
+      mockArtifactSig("system", "2.0.0");
 
       const res = createMockResponse();
 
@@ -357,6 +368,8 @@ describe("Retrieve handler", () => {
     it("serves the latest DB release when forceUpdate bypasses rollout", async () => {
       await createDbReleasePair("2.2.0", 100);
       await createDbReleasePair("2.3.0", 0);
+      mockArtifactSig("app", "2.3.0");
+      mockArtifactSig("system", "2.3.0");
 
       const res = createMockResponse();
 
@@ -395,6 +408,8 @@ describe("Retrieve handler", () => {
     it("uses DB version ranges and bypasses rollout for constrained requests", async () => {
       await createDbReleasePair("3.0.0", 100);
       await createDbReleasePair("3.1.0", 0);
+      mockArtifactSig("app", "3.1.0");
+      mockArtifactSig("system", "3.0.0");
 
       const res = createMockResponse();
 
@@ -413,6 +428,22 @@ describe("Retrieve handler", () => {
         systemVersion: "3.0.0",
         systemSigUrl: `${artifactUrl("system", "3.0.0")}.sig`,
       });
+    });
+
+    it("omits DB-backed stable sigUrl fields when sibling .sig objects are absent", async () => {
+      await createDbReleasePair("3.1.1", 100);
+      mockArtifactSig("app", "3.1.1");
+
+      const res = createMockResponse();
+
+      await Retrieve(createMockRequest({ deviceId: "stable-partial-sig-device" }), res);
+
+      expect(jsonBody(res)).toMatchObject({
+        appVersion: "3.1.1",
+        appSigUrl: `${artifactUrl("app", "3.1.1")}.sig`,
+        systemVersion: "3.1.1",
+      });
+      expect(res._json.systemSigUrl).toBeUndefined();
     });
 
     it("selects the artifact compatible with the requested SKU", async () => {
@@ -447,7 +478,7 @@ describe("Retrieve handler", () => {
       });
     });
 
-    it("falls back to the latest release with a compatible artifact", async () => {
+    it("does not fall back when the latest release lacks a compatible artifact", async () => {
       await createDbRelease("app", "3.3.0", 100, [
         {
           ...releaseArtifact("app", "3.3.0", DEFAULT_SKU),
@@ -466,23 +497,18 @@ describe("Retrieve handler", () => {
       ]);
       await createDbRelease("system", "3.3.1", 100);
 
-      const res = createMockResponse();
-
-      await Retrieve(
-        createMockRequest({
-          deviceId: "sdmmc-compatible-fallback-device",
-          sku: SDMMC_SKU,
-          forceUpdate: "true",
-        }),
-        res,
+      await expect(
+        Retrieve(
+          createMockRequest({
+            deviceId: "sdmmc-compatible-fallback-device",
+            sku: SDMMC_SKU,
+            forceUpdate: "true",
+          }),
+          createMockResponse(),
+        ),
+      ).rejects.toThrow(
+        'Version 3.3.1 predates SKU support and cannot serve SKU "jetkvm-v2-sdmmc"',
       );
-
-      expect(jsonBody(res)).toMatchObject({
-        appVersion: "3.3.1",
-        systemVersion: "3.3.0",
-        systemUrl: artifactUrl("system", "3.3.0", SDMMC_SKU),
-        systemHash: "system-sdmmc-hash",
-      });
     });
 
     it("does not discover or create stable releases from S3", async () => {

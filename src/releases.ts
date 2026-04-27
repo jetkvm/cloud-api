@@ -389,9 +389,42 @@ function toRelease(
   return release as Release;
 }
 
-function addStableSigUrls(release: Release): void {
-  if (release.appUrl) release.appSigUrl = `${release.appUrl}.sig`;
-  if (release.systemUrl) release.systemSigUrl = `${release.systemUrl}.sig`;
+function objectKeyFromArtifactUrl(artifactUrl: string): string {
+  const parsed = new URL(artifactUrl);
+  return decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+}
+
+async function resolveSigUrlFromArtifactUrl(
+  artifactUrl: string,
+): Promise<string | undefined> {
+  const cacheKey = `artifact-url-${artifactUrl}`;
+  const cached = sigUrlCache.get(cacheKey);
+  if (cached !== undefined) return cached === MISSING_SIG_URL ? undefined : cached;
+
+  const sigUrl = `${artifactUrl}.sig`;
+  try {
+    const sigKey = `${objectKeyFromArtifactUrl(artifactUrl)}.sig`;
+    if (await s3ObjectExists(sigKey)) {
+      sigUrlCache.set(cacheKey, sigUrl);
+      return sigUrl;
+    }
+  } catch (error) {
+    console.error(`Failed to resolve sig URL for ${artifactUrl}:`, error);
+    return undefined;
+  }
+
+  sigUrlCache.set(cacheKey, MISSING_SIG_URL);
+  return undefined;
+}
+
+async function addStableSigUrls(release: Release): Promise<void> {
+  const [appSigUrl, systemSigUrl] = await Promise.all([
+    release.appUrl ? resolveSigUrlFromArtifactUrl(release.appUrl) : undefined,
+    release.systemUrl ? resolveSigUrlFromArtifactUrl(release.systemUrl) : undefined,
+  ]);
+
+  if (appSigUrl) release.appSigUrl = appSigUrl;
+  if (systemSigUrl) release.systemSigUrl = systemSigUrl;
 }
 
 async function getReleaseFromS3(
@@ -427,13 +460,6 @@ function compatibleArtifactSelect(sku: string) {
   };
 }
 
-function compatibleReleaseWhere(type: ReleaseType, sku: string) {
-  return {
-    type,
-    artifacts: { some: { compatibleSkus: { has: sku } } },
-  } as const;
-}
-
 function compatibleReleaseSelect(sku: string) {
   return {
     version: true,
@@ -444,7 +470,6 @@ function compatibleReleaseSelect(sku: string) {
 
 function dbReleaseToMetadata(
   release: DbRelease,
-  type: ReleaseType,
   sku: string,
   maxSatisfying?: string,
 ): ReleaseMetadata {
@@ -465,7 +490,7 @@ function dbReleaseToMetadata(
 
 async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
   const rolledOutReleases = await prisma.release.findMany({
-    where: { ...compatibleReleaseWhere(type, sku), rolloutPercentage: 100 },
+    where: { type, rolloutPercentage: 100 },
     select: compatibleReleaseSelect(sku),
   });
 
@@ -503,7 +528,7 @@ async function getReleaseByRange(
   range: string,
 ): Promise<DbRelease> {
   const releases = await prisma.release.findMany({
-    where: compatibleReleaseWhere(type, sku),
+    where: { type },
     select: compatibleReleaseSelect(sku),
   });
 
@@ -561,18 +586,16 @@ export async function Retrieve(req: Request, res: Response) {
     const responseJson = toRelease(
       dbReleaseToMetadata(
         await getReleaseByRange("app", query.sku, appVersion),
-        "app",
         query.sku,
         appVersion,
       ),
       dbReleaseToMetadata(
         await getReleaseByRange("system", query.sku, systemVersion),
-        "system",
         query.sku,
         systemVersion,
       ),
     );
-    addStableSigUrls(responseJson);
+    await addStableSigUrls(responseJson);
     return res.json(responseJson);
   }
 
@@ -587,18 +610,14 @@ export async function Retrieve(req: Request, res: Response) {
   let responseJson: Release;
   if (query.forceUpdate) {
     responseJson = toRelease(
-      dbReleaseToMetadata(latestAppRelease, "app", query.sku),
-      dbReleaseToMetadata(latestSystemRelease, "system", query.sku),
+      dbReleaseToMetadata(latestAppRelease, query.sku),
+      dbReleaseToMetadata(latestSystemRelease, query.sku),
     );
   } else {
     const defaultAppRelease = await getDefaultRelease("app", query.sku);
     const defaultSystemRelease = await getDefaultRelease("system", query.sku);
-    const defaultSystemMetadata = dbReleaseToMetadata(
-      defaultSystemRelease,
-      "system",
-      query.sku,
-    );
-    const defaultAppMetadata = dbReleaseToMetadata(defaultAppRelease, "app", query.sku);
+    const defaultSystemMetadata = dbReleaseToMetadata(defaultSystemRelease, query.sku);
+    const defaultAppMetadata = dbReleaseToMetadata(defaultAppRelease, query.sku);
 
     responseJson = toRelease(defaultAppMetadata, defaultSystemMetadata);
 
@@ -610,7 +629,7 @@ export async function Retrieve(req: Request, res: Response) {
     ) {
       setAppRelease(
         responseJson,
-        dbReleaseToMetadata(latestAppRelease, "app", query.sku),
+        dbReleaseToMetadata(latestAppRelease, query.sku),
       );
     }
 
@@ -622,13 +641,13 @@ export async function Retrieve(req: Request, res: Response) {
     ) {
       setSystemRelease(
         responseJson,
-        dbReleaseToMetadata(latestSystemRelease, "system", query.sku),
+        dbReleaseToMetadata(latestSystemRelease, query.sku),
       );
     }
   }
 
   // Stable responses are DB-backed; signatures live next to the selected artifacts.
-  addStableSigUrls(responseJson);
+  await addStableSigUrls(responseJson);
 
   return res.json(responseJson);
 }
