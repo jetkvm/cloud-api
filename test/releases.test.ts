@@ -1219,7 +1219,7 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
     });
 
     it("should throw NotFoundError when non-default SKU requested on legacy version", async () => {
-      const req = createMockRequest({ sku: "jetkvm-2" });
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
@@ -1237,23 +1237,23 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       );
     });
 
-    it("redirects to the requested SKU path when the S3 version has SKU support", async () => {
-      const req = createMockRequest({ sku: "jetkvm-2" });
+    it("redirects SDMMC SKU to update_sd.img.zip when the S3 version has SKU support", async () => {
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
         CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
       });
 
-      const content = "sku-recovery-content";
+      const content = "sdmmc-recovery-content";
       const crypto = await import("crypto");
       const hash = crypto.createHash("sha256").update(content).digest("hex");
 
       mockS3SkuVersionWithContent(
         "system",
         "2.0.0",
-        "jetkvm-2",
-        "update.img",
+        SDMMC_SKU,
+        "update_sd.img.zip",
         content,
         hash,
       );
@@ -1262,7 +1262,26 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
 
       expect(res.redirect).toHaveBeenCalledWith(
         302,
-        "https://cdn.test.com/system/2.0.0/skus/jetkvm-2/update.img",
+        `https://cdn.test.com/system/2.0.0/skus/${SDMMC_SKU}/update_sd.img.zip`,
+      );
+    });
+
+    it("should throw BadRequestError for an unmapped SKU", async () => {
+      const req = createMockRequest({ sku: "jetkvm-future" });
+      const res = createMockResponse();
+
+      // Even though we never reach S3, mock the listing so a regression that
+      // accepted unknown SKUs would surface as a different kind of failure
+      // rather than silently returning an unrelated error from S3.
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/1.0.0/" }],
+      });
+
+      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
+        BadRequestError,
+      );
+      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
+        'Unsupported SKU "jetkvm-future"',
       );
     });
 
@@ -1295,20 +1314,23 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       );
     });
 
-    it("should throw NotFoundError when requested SKU not available on version with SKU support", async () => {
-      const req = createMockRequest({ sku: "jetkvm-3" });
+    it("should throw NotFoundError when SDMMC zip missing on version with SKU support", async () => {
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
         CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
       });
 
-      // Version has SKU support (jetkvm-v2 exists) but jetkvm-3 doesn't
+      // Version has SKU support (jetkvm-v2 exists) but the SDMMC SKU folder
+      // hasn't shipped update_sd.img.zip for this version yet.
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/2.0.0/skus/" }).resolves({
         Contents: [{ Key: "system/2.0.0/skus/jetkvm-v2/update.img" }],
       });
       s3Mock
-        .on(HeadObjectCommand, { Key: "system/2.0.0/skus/jetkvm-3/update.img" })
+        .on(HeadObjectCommand, {
+          Key: `system/2.0.0/skus/${SDMMC_SKU}/update_sd.img.zip`,
+        })
         .rejects({
           name: "NoSuchKey",
           $metadata: { httpStatusCode: 404 },
@@ -1378,7 +1400,8 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       await RetrieveLatestSystemRecovery(req1, res1);
       expect(res1._redirectUrl).toBe("https://cdn.test.com/system/1.0.0/update.img");
 
-      // Second call with different SKU should NOT use cached result
+      // Second call with the SDMMC SKU should NOT use the cached eMMC result;
+      // it must re-resolve and pick up the SDMMC zip path instead.
       s3Mock.reset();
       s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
         CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
@@ -1386,18 +1409,18 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       mockS3SkuVersionWithContent(
         "system",
         "2.0.0",
-        "jetkvm-2",
-        "update.img",
+        SDMMC_SKU,
+        "update_sd.img.zip",
         content,
         hash,
       );
 
-      const req2 = createMockRequest({ sku: "jetkvm-2" });
+      const req2 = createMockRequest({ sku: SDMMC_SKU });
       const res2 = createMockResponse();
 
       await RetrieveLatestSystemRecovery(req2, res2);
       expect(res2._redirectUrl).toBe(
-        "https://cdn.test.com/system/2.0.0/skus/jetkvm-2/update.img",
+        `https://cdn.test.com/system/2.0.0/skus/${SDMMC_SKU}/update_sd.img.zip`,
       );
     });
   });
