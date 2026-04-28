@@ -57,3 +57,11 @@ export function getDeviceRolloutBucket(deviceId: string): number {
   const hashPrefix = hash.substring(0, 8);
   return parseInt(hashPrefix, 16) % 100;
 }
+
+/**
+ * Extracts the S3 object key from an artifact URL like
+ * `https://cdn.example.com/app/0.5.0/jetkvm_app` → `app/0.5.0/jetkvm_app`.
+ */
+export function objectKeyFromArtifactUrl(artifactUrl: string): string {
+  return decodeURIComponent(new URL(artifactUrl).pathname.replace(/^\/+/, ""));
+}

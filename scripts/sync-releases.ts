@@ -17,7 +17,7 @@ import {
 import { PrismaClient } from "@prisma/client";
 import semver from "semver";
 
-import { streamToString } from "../src/helpers";
+import { objectKeyFromArtifactUrl, streamToString } from "../src/helpers";
 
 const OTA_ROOT_KEY_FPR = "AF5A36A993D828FEFE7C18C2D1B9856C26A79E95";
 
@@ -83,10 +83,6 @@ type SignatureStatus =
 interface ArtifactDisplayInfo {
   artifact: ReleaseArtifactInput;
   signature: SignatureStatus;
-}
-
-function s3KeyFromArtifactUrl(artifactUrl: string): string {
-  return decodeURIComponent(new URL(artifactUrl).pathname.replace(/^\/+/, ""));
 }
 
 function shortFpr(fpr: string): string {
@@ -243,7 +239,7 @@ async function loadArtifactDisplayInfo(
       const signature = await verifySignature(
         clients.s3Client,
         config.bucketName,
-        s3KeyFromArtifactUrl(artifact.url),
+        objectKeyFromArtifactUrl(artifact.url),
       );
       return { artifact, signature };
     }),
