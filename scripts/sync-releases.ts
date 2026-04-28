@@ -148,7 +148,20 @@ function runGpgVerify(
 interface GpgStatus {
   validSig?: { signingFpr: string; rootFpr: string };
   noPubkey?: boolean;
+  // ERRSIG `rc` field. GnuPG documents rc=4 (unsupported algorithm),
+  // rc=9 (missing public key); other codes are possible and we leave
+  // them as raw strings for the caller to format.
+  errSigRc?: string;
   badSig?: boolean;
+}
+
+const ERRSIG_RC_REASONS: Record<string, string> = {
+  "4": "unsupported algorithm",
+  "9": "missing public key",
+};
+
+function describeErrSigRc(rc: string): string {
+  return ERRSIG_RC_REASONS[rc] ?? `gpg error code ${rc}`;
 }
 
 function parseGpgStatus(statusOutput: string): GpgStatus {
@@ -164,10 +177,17 @@ function parseGpgStatus(statusOutput: string): GpgStatus {
       if (parts.length >= 11) {
         result.validSig = { signingFpr: parts[1], rootFpr: parts[10] };
       }
-    } else if (line.startsWith("NO_PUBKEY ") || line.startsWith("ERRSIG ")) {
-      // ERRSIG with rc=9 means missing pubkey too; treat both as no-pubkey
-      // unless we already saw an explicit BADSIG below.
+    } else if (line.startsWith("NO_PUBKEY ")) {
       result.noPubkey = true;
+    } else if (line.startsWith("ERRSIG ")) {
+      // ERRSIG <keyid> <pkalgo> <hashalgo> <sig_class> <time> <rc> [<fpr>]
+      // Index 6 is the rc field. Only rc=9 means "missing public key" —
+      // other codes (e.g. 4 = unsupported algorithm) are real verification
+      // failures and must not be reported as missing-pubkey.
+      const parts = line.split(/\s+/);
+      if (parts.length >= 7) {
+        result.errSigRc = parts[6];
+      }
     } else if (line.startsWith("BADSIG ")) {
       result.badSig = true;
     }
@@ -217,8 +237,18 @@ async function verifySignature(
       }
       return { kind: "valid", ...parsed.validSig };
     }
-    if (parsed.noPubkey) {
+    // NO_PUBKEY and ERRSIG rc=9 both mean "we don't have the signer's key".
+    // Any other ERRSIG rc is a real failure (e.g. unsupported algorithm) and
+    // must surface as `invalid`, not `missing-pubkey`, otherwise the prompt
+    // would falsely tell the operator to import a key they already have.
+    if (parsed.noPubkey || parsed.errSigRc === "9") {
       return { kind: "missing-pubkey" };
+    }
+    if (parsed.errSigRc) {
+      return {
+        kind: "invalid",
+        reason: `ERRSIG ${parsed.errSigRc} (${describeErrSigRc(parsed.errSigRc)})`,
+      };
     }
     const stderrFirstLine =
       result.stderrOutput.split("\n").find(l => l.trim().length > 0)?.trim() ??
