@@ -13,6 +13,7 @@ import { LRUCache } from "lru-cache";
 
 import {
   getDeviceRolloutBucket,
+  objectKeyFromArtifactUrl,
   streamToString,
   toSemverRange,
   verifyHash,
@@ -386,11 +387,6 @@ function toRelease(
   if (appRelease) setAppRelease(release as Release, appRelease);
   if (systemRelease) setSystemRelease(release as Release, systemRelease);
   return release as Release;
-}
-
-function objectKeyFromArtifactUrl(artifactUrl: string): string {
-  const parsed = new URL(artifactUrl);
-  return decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
 }
 
 async function resolveSigUrlFromArtifactUrl(
