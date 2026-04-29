@@ -13,6 +13,7 @@ import { LRUCache } from "lru-cache";
 
 import {
   getDeviceRolloutBucket,
+  objectKeyFromArtifactUrl,
   streamToString,
   toSemverRange,
   verifyHash,
@@ -21,6 +22,18 @@ import { z, ZodError } from "zod";
 
 const DEFAULT_SKU = "jetkvm-v2";
 type ReleaseType = "app" | "system";
+
+/**
+ * Recovery image filename per SKU. eMMC variants are flashed via DFU + the
+ * Rockchip upgrade tool (RKDevTool format), while SDMMC variants are written
+ * to a microSD with balenaEtcher (dd-format zip). Add a new SKU here when
+ * shipping a new hardware variant; unmapped SKUs are rejected so a typo
+ * doesn't silently fall back to the wrong artifact.
+ */
+const RECOVERY_ARTIFACT_BY_SKU: Record<string, string> = {
+  "jetkvm-v2": "update.img",
+  "jetkvm-v2-sdmmc": "update_sd.img.zip",
+};
 
 /** Query param schema builders for common patterns */
 const queryString = () =>
@@ -388,11 +401,6 @@ function toRelease(
   return release as Release;
 }
 
-function objectKeyFromArtifactUrl(artifactUrl: string): string {
-  const parsed = new URL(artifactUrl);
-  return decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
-}
-
 async function resolveSigUrlFromArtifactUrl(
   artifactUrl: string,
 ): Promise<string | undefined> {
@@ -676,6 +684,11 @@ function releaseCacheKey(prefix: string, query: LatestQuery): string {
 export const RetrieveLatestSystemRecovery = cachedRedirect(
   query => releaseCacheKey("system-recovery", query),
   async query => {
+    const recoveryArtifact = RECOVERY_ARTIFACT_BY_SKU[query.sku];
+    if (!recoveryArtifact) {
+      throw new BadRequestError(`Unsupported SKU "${query.sku}"`);
+    }
+
     // Get the latest system recovery image from S3. It's stored in the system/ folder.
     const listCommand = new ListObjectsV2Command({
       Bucket: bucketName,
@@ -702,12 +715,13 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       throw new NotFoundError("No valid system recovery versions found");
     }
 
-    // Resolve the artifact path with SKU support (using update.img for recovery)
+    // Resolve the artifact path with SKU support; the artifact filename
+    // depends on the SKU (eMMC = update.img, SDMMC = update_sd.img.zip).
     const artifactPath = await resolveArtifactPath(
       "system",
       latestVersion,
       query.sku,
-      "update.img",
+      recoveryArtifact,
     );
 
     const [firmwareFile, hashFile] = await Promise.all([
