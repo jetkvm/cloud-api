@@ -29,9 +29,12 @@ declare global {
       GOOGLE_CLIENT_ID: string;
       GOOGLE_CLIENT_SECRET: string;
 
-      // We use Cloudflare STUN & TURN server for cloud users
+      // We can use either Cloudflare or Coturn TURN server for cloud users
       CLOUDFLARE_TURN_ID: string;
       CLOUDFLARE_TURN_TOKEN: string;
+      COTURN_TURN_URLS: string;
+      COTURN_TURN_SECRET: string;
+      TURN_TTL: string;
 
       // We use R2 for storing releases
       R2_ENDPOINT: string;
@@ -44,6 +47,7 @@ declare global {
 
       // Real IP
       REAL_IP_HEADER: string;
+
       ICE_SERVERS: string;
 
       ALLOWED_IDENTITIES?: string;
