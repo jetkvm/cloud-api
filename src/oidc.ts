@@ -14,6 +14,27 @@ import {
 const API_HOSTNAME = process.env.API_HOSTNAME;
 const APP_HOSTNAME = process.env.APP_HOSTNAME;
 const REDIRECT_URI = `${API_HOSTNAME}/oidc/callback`;
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g;
+
+export const normalizeReturnTo = (
+  returnTo: unknown,
+  appHostname = APP_HOSTNAME,
+) => {
+  const fallback = `${appHostname}/devices`;
+  if (typeof returnTo !== "string") return fallback;
+
+  const sanitized = returnTo.replace(CONTROL_CHARACTERS, "").trim();
+  if (!sanitized) return fallback;
+
+  try {
+    const url = new URL(sanitized, appHostname);
+    const appUrl = new URL(appHostname || "");
+    if (url.origin !== appUrl.origin) return fallback;
+    return url.toString();
+  } catch {
+    return fallback;
+  }
+};
 
 export const Login = async (req: express.Request, res: express.Response) => {
   const state = new URLSearchParams();
@@ -24,7 +45,7 @@ export const Login = async (req: express.Request, res: express.Response) => {
   req.session!.csrf = state.get("csrf");
 
   req.session!.deviceId = req.body.deviceId;
-  req.session!.returnTo = req.body.returnTo;
+  req.session!.returnTo = normalizeReturnTo(req.body.returnTo);
 
   const code_verifier = generators.codeVerifier();
   const code_challenge = generators.codeChallenge(code_verifier);
@@ -61,7 +82,7 @@ export const Callback = async (req: express.Request, res: express.Response) => {
   }
 
   const deviceId = req.session?.deviceId as string | undefined;
-  const returnTo = (req.session?.returnTo ?? `${APP_HOSTNAME}/devices`) as string;
+  const returnTo = normalizeReturnTo(req.session?.returnTo);
 
   req.session!.csrf = null;
   req.session!.returnTo = null;
