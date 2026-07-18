@@ -1,6 +1,7 @@
 import { type NextFunction, type Request, type Response } from "express";
 import * as jose from "jose";
 import { UnauthorizedError } from "./errors";
+import { getOidcClientId, getOidcExpectedIssuer, getOidcJwks } from "./oidc-config";
 
 const ALLOWED_IDENTITIES = process.env.ALLOWED_IDENTITIES?.split(",")
     .map((identity) => identity.trim().toLowerCase())
@@ -20,14 +21,13 @@ export const isIdentityAllowed = (identity?: string | null) => {
 };
 
 export const verifyToken = async (idToken: string) => {
-  const JWKS = jose.createRemoteJWKSet(
-    new URL("https://www.googleapis.com/oauth2/v3/certs"),
-  );
+  const JWKS = await getOidcJwks();
+  const clientId = getOidcClientId();
 
   try {
     const { payload } = await jose.jwtVerify(idToken, JWKS, {
-      issuer: "https://accounts.google.com",
-      audience: process.env.GOOGLE_CLIENT_ID,
+      issuer: await getOidcExpectedIssuer(),
+      audience: clientId,
     });
 
     return payload;

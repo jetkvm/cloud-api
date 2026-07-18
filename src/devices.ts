@@ -13,31 +13,25 @@ import { activeConnections } from "./webrtc-signaling";
 
 export const List = async (req: express.Request, res: express.Response) => {
   const idToken = req.session?.id_token;
-  const { iss, sub } = jose.decodeJwt(idToken);
+  const { sub } = jose.decodeJwt(idToken);
 
-  // Authorization server’s identifier for the user
-  const isGoogle = iss === "https://accounts.google.com";
-  if (isGoogle) {
-    const devices = await prisma.device.findMany({
-      where: { user: { googleId: sub } },
-      select: { id: true, name: true, lastSeen: true },
-    });
+  const devices = await prisma.device.findMany({
+    where: { user: { googleId: sub } },
+    select: { id: true, name: true, lastSeen: true },
+  });
 
-    return res.json({
-      devices: devices.map(device => {
-        const activeDevice = activeConnections.get(device.id);
-        const version = activeDevice?.[2] || null;
+  return res.json({
+    devices: devices.map(device => {
+      const activeDevice = activeConnections.get(device.id);
+      const version = activeDevice?.[2] || null;
 
-        return {
-          ...device,
-          online: !!activeDevice,
-          version,
-        };
-      }),
-    });
-  } else {
-    throw new BadRequestError("Token is not from Google");
-  }
+      return {
+        ...device,
+        online: !!activeDevice,
+        version,
+      };
+    }),
+  });
 };
 
 export const Retrieve = async (

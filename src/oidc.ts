@@ -1,25 +1,42 @@
-import { generators, Issuer } from "openid-client";
+import { generators } from "openid-client";
 import express from "express";
 import { prisma } from "./db";
 import { BadRequestError, UnauthorizedError } from "./errors";
 import { isIdentityAllowed } from "./auth";
 import * as crypto from "crypto";
+import {
+  getOidcClient,
+  getOidcClientId,
+  getOidcIssuerUrl,
+  getOidcScopes,
+} from "./oidc-config";
 
 const API_HOSTNAME = process.env.API_HOSTNAME;
 const APP_HOSTNAME = process.env.APP_HOSTNAME;
 const REDIRECT_URI = `${API_HOSTNAME}/oidc/callback`;
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g;
 
-const getGoogleOIDCClient = async () => {
-  const googleIssuer = await Issuer.discover("https://accounts.google.com");
-  return new googleIssuer.Client({
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
-    redirect_uris: [REDIRECT_URI],
-    response_types: ["code"],
-  });
+export const normalizeReturnTo = (
+  returnTo: unknown,
+  appHostname = APP_HOSTNAME,
+) => {
+  const fallback = `${appHostname}/devices`;
+  if (typeof returnTo !== "string") return fallback;
+
+  const sanitized = returnTo.replace(CONTROL_CHARACTERS, "").trim();
+  if (!sanitized) return fallback;
+
+  try {
+    const url = new URL(sanitized, appHostname);
+    const appUrl = new URL(appHostname || "");
+    if (url.origin !== appUrl.origin) return fallback;
+    return url.toString();
+  } catch {
+    return fallback;
+  }
 };
 
-export const Google = async (req: express.Request, res: express.Response) => {
+export const Login = async (req: express.Request, res: express.Response) => {
   const state = new URLSearchParams();
 
   // Generate a CSRF token and store it in the session, so the callback
@@ -28,15 +45,15 @@ export const Google = async (req: express.Request, res: express.Response) => {
   req.session!.csrf = state.get("csrf");
 
   req.session!.deviceId = req.body.deviceId;
-  req.session!.returnTo = req.body.returnTo;
+  req.session!.returnTo = normalizeReturnTo(req.body.returnTo);
 
   const code_verifier = generators.codeVerifier();
   const code_challenge = generators.codeChallenge(code_verifier);
   req.session!.code_verifier = code_verifier;
 
-  const client = await getGoogleOIDCClient();
+  const client = await getOidcClient(REDIRECT_URI);
   const authorizationUrl = client.authorizationUrl({
-    scope: "openid email profile",
+    scope: getOidcScopes(),
     state: state.toString(),
     // This ensures that to even issue the token, the client must have the code_verifier,
     // which is stored in the session cookie.
@@ -47,7 +64,7 @@ export const Google = async (req: express.Request, res: express.Response) => {
 };
 
 export const Callback = async (req: express.Request, res: express.Response) => {
-  const client = await getGoogleOIDCClient();
+  const client = await getOidcClient(REDIRECT_URI);
 
   // Retrieve recognized callback parameters from the request, e.g. code and state
   const params = client.callbackParams(req);
@@ -65,7 +82,7 @@ export const Callback = async (req: express.Request, res: express.Response) => {
   }
 
   const deviceId = req.session?.deviceId as string | undefined;
-  const returnTo = (req.session?.returnTo ?? `${APP_HOSTNAME}/devices`) as string;
+  const returnTo = normalizeReturnTo(req.session?.returnTo);
 
   req.session!.csrf = null;
   req.session!.returnTo = null;
@@ -83,6 +100,10 @@ export const Callback = async (req: express.Request, res: express.Response) => {
   const tokenClaims = tokenSet.claims();
   if (!tokenClaims) {
     throw new BadRequestError("Missing claims in token", "missing_claims");
+  }
+
+  if (typeof tokenClaims.sub !== "string") {
+    throw new BadRequestError("Missing subject claim", "missing_subject_claim");
   }
 
   if (!tokenSet.id_token) {
@@ -161,9 +182,14 @@ export const Callback = async (req: express.Request, res: express.Response) => {
     const url = new URL(returnTo);
     url.searchParams.append("tempToken", tempToken);
     url.searchParams.append("deviceId", deviceId);
+    url.searchParams.append("oidcToken", tokenSet.id_token.toString());
+    url.searchParams.append("oidcClientId", getOidcClientId() || "");
+    url.searchParams.append("oidcIssuer", getOidcIssuerUrl());
     url.searchParams.append("oidcGoogle", tokenSet.id_token.toString());
-    url.searchParams.append("clientId", process.env.GOOGLE_CLIENT_ID);
+    url.searchParams.append("clientId", getOidcClientId() || "");
     return res.redirect(url.toString());
   }
   return res.redirect(returnTo);
 };
+
+export const Google = Login;

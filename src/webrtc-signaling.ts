@@ -329,6 +329,7 @@ function setupClientWebSocket(clientWs: WebSocket, deviceId: string, token: stri
                 sd: msg.data.sd,
                 ip,
                 iceServers,
+                OidcToken: token,
                 OidcGoogle: token,
               },
             }),
