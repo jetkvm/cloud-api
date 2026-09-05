@@ -99,6 +99,8 @@ export const Callback = async (req: express.Request, res: express.Response) => {
   }
 
   req.session!.id_token = tokenSet.id_token;
+  req.session!.authenticatedAt = Date.now();
+  req.session!.lastActiveAt = Date.now();
 
   await prisma.user.upsert({
     where: { googleId: tokenClaims.sub },
