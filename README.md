@@ -64,6 +64,14 @@ docker compose up -d
 
 The app will be available on port 3000. Configure a reverse proxy (nginx, Caddy, etc.) for TLS termination.
 
+### Native app sign-in
+
+Native clients can't read the session cookie out of the system browser, so `NATIVE_APP_SCHEMES` lets an app on a registered URL scheme (e.g. `jetpilot`) sign in through the normal login page:
+
+1. The app opens `${APP_HOSTNAME}/login?returnTo=jetpilot://auth` in the system browser (passkeys and password managers work there).
+2. After sign-in, `/oidc/callback` redirects to `jetpilot://auth?code=…` with a single-use code valid for five minutes, and clears the browser session.
+3. The app calls `POST /auth/exchange` with `{ "code": "…" }` and stores the `session` / `session.sig` cookies from the response.
+
 ### Updating
 
 ```bash
