@@ -16,7 +16,6 @@ import {
   objectKeyFromArtifactUrl,
   streamToString,
   toSemverRange,
-  verifyHash,
 } from "./helpers";
 import { z, ZodError } from "zod";
 import {
@@ -686,39 +685,19 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       recovery.file,
     );
 
-    const [firmwareFile, hashFile] = await Promise.all([
-      // TODO: store file hash using custom header to avoid extra request
-      s3Client.send(
-        new GetObjectCommand({
-          Bucket: bucketName,
-          Key: artifactPath,
-        }),
-      ),
-      s3Client.send(
-        new GetObjectCommand({
-          Bucket: bucketName,
-          Key: `${artifactPath}.sha256`,
-        }),
-      ),
-    ]);
-
-    if (!firmwareFile.Body || !hashFile.Body) {
-      throw new NotFoundError(
-        `Recovery image or hash file not found for version ${latestVersion}`,
-      );
+    if (!(await s3ObjectExists(artifactPath))) {
+      throw new NotFoundError(`Recovery image not found for version ${latestVersion}`);
     }
-
-    await verifyHash(firmwareFile, hashFile, "recovery image hash does not match");
-
-    console.log("recovery image hash matches", latestVersion);
 
     return `${baseUrl}/${artifactPath}`;
   },
 );
 
 /**
- * 302 to the newest over-the-air artifact of one kind for the requested SKU,
- * after verifying the object against its .sha256 sibling. The product table
+ * 302 to the newest over-the-air artifact of one kind for the requested SKU.
+ * Integrity is checked at publish time (the .sha256 sidecar is written by the
+ * release script, the sync script verifies hash and signature); here the
+ * object only has to exist. The product table
  * says which prefix holds it, so the same URL serves every product. Used by
  * build tooling (rv1106-system pulls the app binary into the system image)
  * and by flashing scripts.
@@ -763,30 +742,10 @@ function latestArtifactRedirect(kind: OtaKind) {
         artifact.file,
       );
 
-      const [artifactFile, hashFile] = await Promise.all([
-        s3Client.send(
-          new GetObjectCommand({
-            Bucket: bucketName,
-            Key: artifactPath,
-          }),
-        ),
-        s3Client.send(
-          new GetObjectCommand({
-            Bucket: bucketName,
-            Key: `${artifactPath}.sha256`,
-          }),
-        ),
-      ]);
-
-      if (!artifactFile.Body || !hashFile.Body) {
-        throw new NotFoundError(
-          `${prefix} artifact or hash file not found for version ${latestVersion}`,
-        );
+      if (!(await s3ObjectExists(artifactPath))) {
+        throw new NotFoundError(`${prefix} artifact not found for version ${latestVersion}`);
       }
 
-      await verifyHash(artifactFile, hashFile, `${prefix} hash does not match`);
-
-      console.log(`${prefix} hash matches`, latestVersion);
       return `${baseUrl}/${artifactPath}`;
     },
   );
