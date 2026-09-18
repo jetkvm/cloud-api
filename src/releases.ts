@@ -471,16 +471,18 @@ function dbReleaseToMetadata(release: DbRelease, sku: string): ReleaseMetadata {
   };
 }
 
-async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease> {
+/**
+ * Newest fully rolled out release for the prefix, or null when no release
+ * has reached 100% yet (a prefix whose first release is still staged).
+ */
+async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease | null> {
   const rolledOutReleases = await prisma.release.findMany({
     where: { type: prefix, rolloutPercentage: 100 },
     select: compatibleReleaseSelect(sku),
   });
 
   if (rolledOutReleases.length === 0) {
-    throw new InternalServerError(
-      `No default release found for type ${prefix} and SKU "${sku}"`,
-    );
+    return null;
   }
 
   // Only consider releases that ship a binary for this SKU. Without this,
@@ -605,7 +607,13 @@ export async function Retrieve(req: Request, res: Response) {
         latest.artifacts.length > 0 &&
         (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
 
-      offered[kind] = dbReleaseToMetadata(useLatest ? latest : fallback, sku);
+      const chosen = useLatest ? latest : fallback;
+      if (!chosen) {
+        throw new NotFoundError(
+          `No ${prefix} release is rolled out yet for SKU "${sku}"`,
+        );
+      }
+      offered[kind] = dbReleaseToMetadata(chosen, sku);
     }),
   );
 
