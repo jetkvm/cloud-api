@@ -20,7 +20,7 @@ function toICEServers(str: string) {
 
 export const iceServers = toICEServers(
   process.env.ICE_SERVERS ||
-    "stun.cloudflare.com:3478,stun:stun.l.google.com:19302,stun:stun1.l.google.com:5349",
+    "stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302,stun:stun1.l.google.com:5349",
 );
 
 // Helper function to update device last seen timestamp
