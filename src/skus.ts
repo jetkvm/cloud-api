@@ -50,12 +50,17 @@ export const SKUS: Record<string, SkuArtifacts> = {
   // JetKVM Mini (ESP32-P4). One firmware image is the whole system:
   // FreeRTOS, drivers, the application, the web UI and the ESP32-C5 Wi-Fi
   // co-processor firmware. There is no separate app. The Ethernet (IP101)
-  // and wireless (ESP32-C5 over SDIO) boards are separate builds.
+  // and wireless (ESP32-C5 over SDIO) boards are separate builds. The
+  // recovery image is the merged full-flash binary (bootloader, partition
+  // table, firmware in the first OTA slot, erased OTA selection data),
+  // written with esptool or a browser flasher at offset 0.
   "jetkvm-mini-ethernet": {
     system: "mini/jetkvm-mini.bin",
+    recovery: "mini/jetkvm-mini-full.bin",
   },
   "jetkvm-mini-wireless": {
     system: "mini/jetkvm-mini.bin",
+    recovery: "mini/jetkvm-mini-full.bin",
   },
 };
 

@@ -1460,15 +1460,70 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       );
     });
 
-    it("should throw BadRequestError for a SKU without a recovery image", async () => {
-      const req = createMockRequest({ sku: MINI_ETHERNET_SKU });
-      const res = createMockResponse();
+    it("redirects a mini SKU to the full-flash image under the mini prefix", async () => {
+      s3Mock.on(ListObjectsV2Command, { Prefix: "mini/" }).resolves({
+        CommonPrefixes: [{ Prefix: "mini/1.0.0/" }, { Prefix: "mini/1.1.0/" }],
+      });
 
-      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-        BadRequestError,
+      const content = "mini-full-flash";
+      const crypto = await import("crypto");
+      const hash = crypto.createHash("sha256").update(content).digest("hex");
+      mockS3SkuVersionWithContent(
+        "mini",
+        "1.1.0",
+        MINI_WIRELESS_SKU,
+        "jetkvm-mini-full.bin",
+        content,
+        hash,
       );
-      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-        'SKU "jetkvm-mini-ethernet" has no downloadable recovery image',
+
+      const res = createMockResponse();
+      await RetrieveLatestSystemRecovery(createMockRequest({ sku: MINI_WIRELESS_SKU }), res);
+
+      expect(res.redirect).toHaveBeenCalledWith(
+        302,
+        `https://cdn.test.com/mini/1.1.0/skus/${MINI_WIRELESS_SKU}/jetkvm-mini-full.bin`,
+      );
+      expect(s3Mock.commandCalls(ListObjectsV2Command, { Prefix: "system/" }).length).toBe(0);
+    });
+
+    it("keeps separate recovery cache entries for JetKVM and mini SKUs", async () => {
+      s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
+        CommonPrefixes: [{ Prefix: "system/2.0.0/" }],
+      });
+      s3Mock.on(ListObjectsV2Command, { Prefix: "mini/" }).resolves({
+        CommonPrefixes: [{ Prefix: "mini/1.0.0/" }],
+      });
+      const crypto = await import("crypto");
+      const systemContent = "system-recovery";
+      const miniContent = "mini-full-flash";
+      mockS3SkuVersionWithContent(
+        "system",
+        "2.0.0",
+        DEFAULT_SKU,
+        "update.img",
+        systemContent,
+        crypto.createHash("sha256").update(systemContent).digest("hex"),
+      );
+      mockS3SkuVersionWithContent(
+        "mini",
+        "1.0.0",
+        MINI_ETHERNET_SKU,
+        "jetkvm-mini-full.bin",
+        miniContent,
+        crypto.createHash("sha256").update(miniContent).digest("hex"),
+      );
+
+      const systemRes = createMockResponse();
+      await RetrieveLatestSystemRecovery(createMockRequest({ sku: DEFAULT_SKU }), systemRes);
+      const miniRes = createMockResponse();
+      await RetrieveLatestSystemRecovery(createMockRequest({ sku: MINI_ETHERNET_SKU }), miniRes);
+
+      expect(systemRes._redirectUrl).toBe(
+        "https://cdn.test.com/system/2.0.0/skus/jetkvm-v2/update.img",
+      );
+      expect(miniRes._redirectUrl).toBe(
+        `https://cdn.test.com/mini/1.0.0/skus/${MINI_ETHERNET_SKU}/jetkvm-mini-full.bin`,
       );
     });
 
