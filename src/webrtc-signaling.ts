@@ -8,6 +8,7 @@ import { Socket } from "node:net";
 import { Device } from "@prisma/client";
 import { Server, ServerResponse } from "node:http";
 import { cookieSessionMiddleware } from ".";
+import { getActiveSession } from "./auth";
 
 // Maintain the shared state
 export const activeConnections: Map<string, [WebSocket, string, string | null]> =
@@ -243,15 +244,16 @@ async function handleClientSocketRequest(
 // Authenticate the client connection
 async function authenticateClientRequest(req: Request & { session: any }) {
   const session = req.session;
-  const token = session?.id_token;
+  const active = getActiveSession(session);
 
-  if (!token) {
-    console.log("[Client] No authentication token.");
+  if (!active) {
+    console.log("[Client] No active session.");
     return { deviceId: null };
   }
+  const token: string = session.id_token;
 
   try {
-    const { sub } = jose.decodeJwt(token);
+    const { sub } = active.claims;
     const url = new URL(req.url || "", "http://localhost");
     const deviceId = url.searchParams.get("id");
 
