@@ -160,12 +160,16 @@ try:
 except Exception:
     normalized_path.write_text(body)
 else:
+    # Resolver bookkeeping that older deploys still serialize; the device
+    # never reads it, so it is not part of the comparison.
+    ignored_suffixes = ("CachedAt", "MaxSatisfying")
+
     def scrub(value):
         if isinstance(value, dict):
             return {
                 key: scrub(child)
                 for key, child in value.items()
-                if not key.endswith("CachedAt")
+                if not key.endswith(ignored_suffixes)
             }
         if isinstance(value, list):
             return [scrub(item) for item in value]
@@ -261,8 +265,10 @@ if left_keys != {"name", "message"} or right_keys != {"name", "message"}:
 # Both messages mean "no release compatible with this SKU is available";
 # the wording differs across deploys but the device sees the same 404.
 no_compat_patterns = [
+    re.compile(r'^Version .+ has no artifact for SKU "([^"]+)"$'),
     re.compile(r'^Version .+ predates SKU support and cannot serve SKU "([^"]+)"$'),
-    re.compile(r'^No default (?:app|system) release available for SKU "([^"]+)"$'),
+    re.compile(r'^SKU "([^"]+)" is not available for version .+$'),
+    re.compile(r'^No default (?:app|system|mini) release available for SKU "([^"]+)"$'),
 ]
 
 def canonicalize(message):
