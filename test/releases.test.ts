@@ -134,6 +134,9 @@ function mockS3LegacyVersionWithContent(
     Contents: [],
   });
 
+  // Legacy artifact exists (HeadObjectCommand for the existence check)
+  s3Mock.on(HeadObjectCommand, { Key: `${prefix}/${version}/${fileName}` }).resolves({});
+
   // Mock legacy file path with content
   s3Mock.on(GetObjectCommand, { Key: `${prefix}/${version}/${fileName}` }).resolves({
     Body: createAsyncIterable(content) as any,
@@ -929,25 +932,6 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
     );
   });
 
-  it("should throw InternalServerError when hash does not match", async () => {
-    const req = createMockRequest({});
-    const res = createMockResponse();
-
-    s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
-      CommonPrefixes: [{ Prefix: "app/1.0.0/" }],
-    });
-
-    mockS3LegacyVersionWithContent(
-      "app",
-      "1.0.0",
-      "jetkvm_app",
-      "actual-content",
-      "wrong-hash-value",
-    );
-
-    await expect(RetrieveLatestApp(req, res)).rejects.toThrow(InternalServerError);
-  });
-
   it("should throw NotFoundError when app file is missing", async () => {
     const req = createMockRequest({});
     const res = createMockResponse();
@@ -961,12 +945,9 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
       Contents: [],
     });
 
-    s3Mock.on(GetObjectCommand, { Key: "app/1.0.0/jetkvm_app" }).resolves({
-      Body: undefined,
-    });
-    s3Mock.on(GetObjectCommand, { Key: "app/1.0.0/jetkvm_app.sha256" }).resolves({
-      Body: createAsyncIterable("some-hash") as any,
-    });
+    s3Mock
+      .on(HeadObjectCommand, { Key: "app/1.0.0/jetkvm_app" })
+      .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
 
     await expect(RetrieveLatestApp(req, res)).rejects.toThrow(NotFoundError);
   });
@@ -1304,28 +1285,7 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
     );
   });
 
-  it("should throw InternalServerError when hash does not match", async () => {
-    const req = createMockRequest({});
-    const res = createMockResponse();
-
-    s3Mock.on(ListObjectsV2Command, { Prefix: "system/" }).resolves({
-      CommonPrefixes: [{ Prefix: "system/1.0.0/" }],
-    });
-
-    mockS3LegacyVersionWithContent(
-      "system",
-      "1.0.0",
-      "update.img",
-      "actual-content",
-      "mismatched-hash",
-    );
-
-    await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-      InternalServerError,
-    );
-  });
-
-  it("should throw NotFoundError when recovery image or hash file is missing", async () => {
+  it("should throw NotFoundError when recovery image is missing", async () => {
     const req = createMockRequest({});
     const res = createMockResponse();
 
@@ -1338,12 +1298,9 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       Contents: [],
     });
 
-    s3Mock.on(GetObjectCommand, { Key: "system/1.0.0/update.img" }).resolves({
-      Body: undefined,
-    });
-    s3Mock.on(GetObjectCommand, { Key: "system/1.0.0/update.img.sha256" }).resolves({
-      Body: undefined,
-    });
+    s3Mock
+      .on(HeadObjectCommand, { Key: "system/1.0.0/update.img" })
+      .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
 
     await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(NotFoundError);
   });
