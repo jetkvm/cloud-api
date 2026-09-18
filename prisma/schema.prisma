@@ -49,7 +49,7 @@ model Release {
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
   url               String
-  type              String            @default("app") // "app" or "system"
+  type              String            @default("app") // R2 prefix: "app", "system" or "mini" (see src/skus.ts)
   hash              String
   artifacts         ReleaseArtifact[]
 
