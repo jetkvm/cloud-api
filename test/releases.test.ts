@@ -587,15 +587,26 @@ describe("Retrieve handler", () => {
       expect(s3Mock.commandCalls(GetObjectCommand)).toHaveLength(0);
     });
 
-    it("fails when no fully rolled out default exists for background checks", async () => {
+    it("serves a staged release to an in-bucket device even when nothing is at 100%", async () => {
+      // early-adopter hashes to rollout bucket 8, inside a 50% rollout.
+      await testPrisma.release.updateMany({ data: { rolloutPercentage: 50 } });
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter" }), res);
+
+      expect(jsonBody(res)).toMatchObject({ appVersion: "1.2.0", systemVersion: "1.2.0" });
+    });
+
+    it("answers 404, not 500, to an out-of-bucket device when nothing is at 100%", async () => {
+      // late-adopter hashes to rollout bucket 95, outside a 50% rollout.
       await testPrisma.release.updateMany({ data: { rolloutPercentage: 50 } });
 
       await expect(
-        Retrieve(
-          createMockRequest({ deviceId: "no-default-device" }),
-          createMockResponse(),
-        ),
-      ).rejects.toThrow(InternalServerError);
+        Retrieve(createMockRequest({ deviceId: "late-adopter" }), createMockResponse()),
+      ).rejects.toThrow(NotFoundError);
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "late-adopter" }), createMockResponse()),
+      ).rejects.toThrow(/No (app|system) release is rolled out yet for SKU "jetkvm-v2"/);
     });
   });
 
@@ -787,6 +798,20 @@ describe("Retrieve handler", () => {
           res,
         ),
       ).rejects.toThrow('Version 1.0.0 has no artifact for SKU "jetkvm-mini-ethernet"');
+    });
+
+    it("serves the first staged mini release to an in-bucket device and 404s the rest", async () => {
+      // No mini row at 100% yet: the first release is at 10%.
+      // early-adopter hashes to bucket 8, late-adopter to bucket 95.
+      await createDbRelease("mini", "1.0.0", 10, miniArtifacts("1.0.0"));
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter", sku: MINI_ETHERNET_SKU }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ systemVersion: "1.0.0" });
+
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "late-adopter", sku: MINI_ETHERNET_SKU }), createMockResponse()),
+      ).rejects.toThrow('No mini release is rolled out yet for SKU "jetkvm-mini-ethernet"');
     });
 
     it("fails when no mini release exists for the SKU", async () => {
