@@ -137,7 +137,8 @@ async function handleDeviceSocketRequest(
   }
 }
 
-// Authenticate the device connection
+// Authenticate the device connection. Returns null only when the token can
+// never authenticate: missing, unknown, or bound to a different device id.
 async function authenticateDeviceRequest(req: IncomingMessage) {
   const authHeader = req.headers["authorization"];
   const secretToken = authHeader?.split(" ")?.[1];
@@ -147,24 +148,22 @@ async function authenticateDeviceRequest(req: IncomingMessage) {
     return null;
   }
 
-  try {
-    const device = await prisma.device.findFirst({ where: { secretToken } });
-    if (!device) {
-      console.log("[Device] Invalid secret token provided.");
-      return null;
-    }
-
-    const id = req.headers["x-device-id"] as string;
-    if (!id || id !== device.id) {
-      console.log("[Device] Invalid device ID or ID/token mismatch.");
-      return null;
-    }
-
-    return device;
-  } catch (error) {
-    console.error("[Device] Error authenticating device:", error);
+  // A failed lookup (database down, pool exhausted) must not read as a bad
+  // token: the caller answers 500 for it, which the device treats as
+  // transient, while 401 means the token itself will never work.
+  const device = await prisma.device.findFirst({ where: { secretToken } });
+  if (!device) {
+    console.log("[Device] Invalid secret token provided.");
     return null;
   }
+
+  const id = req.headers["x-device-id"] as string;
+  if (!id || id !== device.id) {
+    console.log("[Device] Invalid device ID or ID/token mismatch.");
+    return null;
+  }
+
+  return device;
 }
 
 // Setup the device WebSocket after authentication

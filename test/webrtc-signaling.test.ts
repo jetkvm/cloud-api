@@ -4,6 +4,30 @@ import type { AddressInfo, Socket } from "node:net";
 
 import { testPrisma } from "./setup";
 
+// Prisma model delegates are proxies, so vi.spyOn cannot replace their
+// methods. Wrap the real client instead and let a test fail the next
+// device lookup, to simulate a database that is down or out of connections.
+const db = vi.hoisted(() => ({ nextDeviceLookupError: null as Error | null }));
+vi.mock("../src/db", async importOriginal => {
+  const { prisma } = await importOriginal<typeof import("../src/db")>();
+  const device = new Proxy(prisma.device, {
+    get(target, prop, receiver) {
+      if (prop === "findFirst" && db.nextDeviceLookupError) {
+        const error = db.nextDeviceLookupError;
+        db.nextDeviceLookupError = null;
+        return () => Promise.reject(error);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+  return {
+    prisma: new Proxy(prisma, {
+      get: (target, prop, receiver) =>
+        prop === "device" ? device : Reflect.get(target, prop, receiver),
+    }),
+  };
+});
+
 // The signaling module imports the cookie-session middleware from src/index.ts,
 // which starts the listening server. Replace it with one that reads the session
 // from a test header, so client upgrades can carry a session without cookies.
@@ -127,6 +151,12 @@ describe("upgrade rejections", () => {
 
   it("answers 401 when the device id does not match the token", async () => {
     expect((await upgrade("/", deviceHeaders(SECRET_TOKEN, "other-device"))).status).toBe(401);
+  });
+
+  it("answers 500, not 401, when the token lookup itself fails", async () => {
+    db.nextDeviceLookupError = new Error("connection pool exhausted");
+    expect((await upgrade("/", deviceHeaders(SECRET_TOKEN))).status).toBe(500);
+    expect(db.nextDeviceLookupError).toBeNull();
   });
 
   it("completes the upgrade for a valid device token", async () => {
