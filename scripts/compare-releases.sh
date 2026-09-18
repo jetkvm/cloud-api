@@ -11,6 +11,10 @@ PROD_BASE="${PROD_BASE:-https://api.jetkvm.com}"
 # Together they exercise both eligible and ineligible rollout paths.
 DEFAULT_DEVICE_IDS=("compare-device-1" "compare-device-2")
 DEFAULT_SKUS=("__omit__" "jetkvm-v2" "jetkvm-v2-sdmmc")
+# SKUs whose responses are allowed to differ from production until the SKU
+# table is deployed there: the two Mini variants (no app artifact, no release
+# yet) and one unregistered SKU (400 locally, 404 on the old code).
+EXTRA_SKUS="${EXTRA_SKUS:-jetkvm-mini-ethernet jetkvm-mini-wireless jetkvm-v3}"
 TRISTATE_VALUES=("__omit__" "false" "true")
 
 TMP_DIR="$(mktemp -d)"
@@ -43,6 +47,8 @@ Environment overrides:
   CURL_TIMEOUT            Curl max time in seconds (default: 30)
   CURL_CONNECT_TIMEOUT    Curl connect timeout in seconds (default: 10)
   FAIL_FAST               Stop after first failed case (default: true)
+  EXTRA_SKUS              Space-separated SKUs compared with the expected 400-vs-404
+                          deviation accepted (default: both Mini SKUs and jetkvm-v3)
 
 Examples:
   scripts/compare-releases.sh
@@ -269,6 +275,7 @@ no_compat_patterns = [
     re.compile(r'^Version .+ predates SKU support and cannot serve SKU "([^"]+)"$'),
     re.compile(r'^SKU "([^"]+)" is not available for version .+$'),
     re.compile(r'^No default (?:app|system|mini) release available for SKU "([^"]+)"$'),
+    re.compile(r'^No release found for type \S+ and SKU "([^"]+)"$'),
 ]
 
 def canonicalize(message):
@@ -292,8 +299,9 @@ is_accepted_deviation() {
   local query="$1"
   local left_prefix="$2"
   local right_prefix="$3"
-  python3 - "$query" "${left_prefix}.meta" "${right_prefix}.meta" "${left_prefix}.normalized" "${right_prefix}.normalized" <<'PY'
+  EXTRA_SKUS="$EXTRA_SKUS" python3 - "$query" "${left_prefix}.meta" "${right_prefix}.meta" "${left_prefix}.normalized" "${right_prefix}.normalized" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -324,6 +332,25 @@ right_meta = parse_meta(right_meta_path)
 left_body = load_json(left_body_path)
 right_body = load_json(right_body_path)
 
+def accept(reason):
+    print(reason)
+    raise SystemExit(0)
+
+# Accepted behavior change:
+# For SKUs in EXTRA_SKUS (unregistered, or registered but without releases or
+# without the requested artifact) the SKU table answers 400 or 404 with its
+# own wording; the code before it answered 400 or 404 from a different check.
+# Both sides refusing with a client error means the same thing here.
+if one("sku") in os.environ.get("EXTRA_SKUS", "").split():
+    def refuses(meta, body):
+        return (
+            meta.get("http_code") in ("400", "404")
+            and isinstance(body, dict)
+            and str(body.get("name", "")).endswith("Error")
+        )
+    if refuses(left_meta, left_body) and refuses(right_meta, right_body):
+        accept("SKU table: both sides refuse this SKU with a 4xx (wording and status may differ)")
+
 # Accepted behavior change:
 # Stable requests with prerelease/dev version constraints are DB-only locally.
 # Production still resolves those directly from S3. Local 404 vs prod 200 is expected.
@@ -344,7 +371,7 @@ if not isinstance(left_body, dict) or left_body.get("name") != "NotFoundError":
 if not isinstance(right_body, dict) or not right_body.get("appVersion") or not right_body.get("systemVersion"):
     raise SystemExit(1)
 
-raise SystemExit(0)
+accept("stable dev/prerelease version constraints are DB-only locally")
 PY
 }
 
@@ -500,11 +527,12 @@ write_case_result() {
     fi
   fi
 
-  if (( failed == 1 )) && is_accepted_deviation "$query" "$left_prefix" "$right_prefix"; then
+  if (( failed == 1 )) && accepted_reason="$(is_accepted_deviation "$query" "$left_prefix" "$right_prefix")"; then
     failed=0
-    accepted_reason="stable dev/prerelease version constraints are DB-only locally"
     details=""
     mismatch_count=0
+  else
+    accepted_reason=""
   fi
 
   {
@@ -710,10 +738,24 @@ STABLE_SYSTEM_VERSION="${stable_versions[1]:-}"
 PRERELEASE_APP_VERSION="${prerelease_versions[0]:-}"
 PRERELEASE_SYSTEM_VERSION="${prerelease_versions[1]:-}"
 
+# Range constraints around the live stable version: the caret range resolves
+# to the newest patch of the current minor, "<stable" to the newest release
+# before it, which for app/system reaches back into the pre-skus/ layout.
+range_values() {
+  local version="$1"
+  [[ -z "$version" ]] && return
+  local major minor
+  IFS=. read -r major minor _ <<<"$version"
+  printf '%s\n' "^${major}.${minor}.0" "<${version}"
+}
+mapfile -t APP_RANGE_VALUES < <(range_values "$STABLE_APP_VERSION")
+mapfile -t SYSTEM_RANGE_VALUES < <(range_values "$STABLE_SYSTEM_VERSION")
+read -r -a EXTRA_SKU_LIST <<<"$EXTRA_SKUS"
+
 mapfile -t APP_VERSION_VALUES < <(build_value_set "$STABLE_APP_VERSION" "$PRERELEASE_APP_VERSION")
 mapfile -t SYSTEM_VERSION_VALUES < <(build_value_set "$STABLE_SYSTEM_VERSION" "$PRERELEASE_SYSTEM_VERSION")
 
-TOTAL_CASES=$(( ${#DEVICE_IDS[@]} * ${#TRISTATE_VALUES[@]} * ${#APP_VERSION_VALUES[@]} * ${#SYSTEM_VERSION_VALUES[@]} * ${#DEFAULT_SKUS[@]} + ${#TRISTATE_VALUES[@]} * ${#DEFAULT_SKUS[@]} * 2 ))
+TOTAL_CASES=$(( ${#DEVICE_IDS[@]} * ${#TRISTATE_VALUES[@]} * ${#APP_VERSION_VALUES[@]} * ${#SYSTEM_VERSION_VALUES[@]} * ${#DEFAULT_SKUS[@]} + ${#TRISTATE_VALUES[@]} * ${#DEFAULT_SKUS[@]} * 2 + ${#DEVICE_IDS[@]} * ${#DEFAULT_SKUS[@]} * (${#APP_RANGE_VALUES[@]} + ${#SYSTEM_RANGE_VALUES[@]}) + ${#EXTRA_SKU_LIST[@]} * 4 ))
 declare -A JOB_RESULT_FILES=()
 log "  total cases: $TOTAL_CASES"
 log "  parallel: $MAX_PARALLEL"
@@ -759,6 +801,64 @@ for prerelease in "${TRISTATE_VALUES[@]}"; do
       query_keys \
       query_values
   done
+done
+
+# Range and older-version constraints, one axis at a time.
+for device_id in "${DEVICE_IDS[@]}"; do
+  for sku in "${DEFAULT_SKUS[@]}"; do
+    for app_version in "${APP_RANGE_VALUES[@]}"; do
+      if stop_requested; then
+        break 3
+      fi
+      query_keys=("deviceId" "appVersion" "sku")
+      query_values=("$device_id" "$app_version" "$sku")
+      run_case \
+        "GET /releases deviceId=$device_id appVersion=$app_version sku=$sku" \
+        "/releases" \
+        query_keys \
+        query_values
+    done
+    for system_version in "${SYSTEM_RANGE_VALUES[@]}"; do
+      if stop_requested; then
+        break 3
+      fi
+      query_keys=("deviceId" "systemVersion" "sku")
+      query_values=("$device_id" "$system_version" "$sku")
+      run_case \
+        "GET /releases deviceId=$device_id systemVersion=$system_version sku=$sku" \
+        "/releases" \
+        query_keys \
+        query_values
+    done
+  done
+done
+
+# SKUs the SKU table treats differently from the code before it.
+for sku in "${EXTRA_SKU_LIST[@]}"; do
+  for prerelease in "__omit__" "true"; do
+    if stop_requested; then
+      break 2
+    fi
+    query_keys=("deviceId" "prerelease" "sku")
+    query_values=("${DEVICE_IDS[0]}" "$prerelease" "$sku")
+    run_case \
+      "GET /releases deviceId=${DEVICE_IDS[0]} prerelease=$prerelease sku=$sku" \
+      "/releases" \
+      query_keys \
+      query_values
+  done
+  query_keys=("sku")
+  query_values=("$sku")
+  run_case \
+    "GET /releases/app/latest sku=$sku" \
+    "/releases/app/latest" \
+    query_keys \
+    query_values
+  run_case \
+    "GET /releases/system_recovery/latest sku=$sku" \
+    "/releases/system_recovery/latest" \
+    query_keys \
+    query_values
 done
 
 drain_jobs
