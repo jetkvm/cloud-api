@@ -7,6 +7,9 @@ import {
 import { describe, expect, beforeEach, it } from "vitest";
 
 import { collectReleaseArtifacts, syncReleases } from "../scripts/sync-releases";
+import { otaFileForPrefix } from "../src/skus";
+
+type ReleaseType = string;
 import { createAsyncIterable, s3Mock, testPrisma } from "./setup";
 
 const DEFAULT_SKU = "jetkvm-v2";
@@ -15,14 +18,14 @@ const SYNC_BUCKET = "test-bucket";
 const SYNC_BASE_URL = "https://cdn.test.com";
 const syncS3Client = new S3Client({});
 
-function mockS3ListVersions(prefix: "app" | "system", versions: string[]) {
+function mockS3ListVersions(prefix: ReleaseType, versions: string[]) {
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/` }).resolves({
     CommonPrefixes: versions.map(v => ({ Prefix: `${prefix}/${v}/` })),
   });
 }
 
-function mockS3HashFile(prefix: "app" | "system", version: string, hash: string) {
-  const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+function mockS3HashFile(prefix: ReleaseType, version: string, hash: string) {
+  const fileName = otaFileForPrefix(prefix);
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/${version}/skus/` }).resolves({
     Contents: [],
   });
@@ -34,12 +37,12 @@ function mockS3HashFile(prefix: "app" | "system", version: string, hash: string)
 }
 
 function mockS3SkuVersion(
-  prefix: "app" | "system",
+  prefix: ReleaseType,
   version: string,
   sku: string,
   hash: string,
 ) {
-  const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const fileName = otaFileForPrefix(prefix);
   const skuPath = `${prefix}/${version}/skus/${sku}/${fileName}`;
 
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/${version}/skus/` }).resolves({

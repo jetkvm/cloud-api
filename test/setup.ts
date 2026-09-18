@@ -3,6 +3,9 @@ import { mockClient } from "aws-sdk-client-mock";
 import { S3Client } from "@aws-sdk/client-s3";
 import { PrismaClient } from "@prisma/client";
 import { config } from "dotenv";
+import { otaFileForPrefix } from "../src/skus";
+
+type ReleaseType = string;
 
 // Load .env.development for config
 config({ path: ".env.development" });
@@ -23,8 +26,6 @@ export const s3Mock = mockClient(S3Client);
 
 // Create a test Prisma client
 export const testPrisma = new PrismaClient();
-
-type ReleaseType = "app" | "system";
 
 // Pre-SKU artifacts are jetkvm-v2 only; future SKUs need explicit
 // skus/<sku>/ uploads, registered via scripts/sync-releases.ts.
@@ -141,7 +142,7 @@ export async function setRollout(
       version,
       type,
       rolloutPercentage: percentage,
-      url: `https://cdn.test.com/${type}/${version}/${type === "app" ? "jetkvm_app" : "system.tar"}`,
+      url: `https://cdn.test.com/${type}/${version}/${otaFileForPrefix(type)}`,
       hash: `test-hash-${version}-${type}`,
     },
   });

@@ -19,21 +19,15 @@ import {
   verifyHash,
 } from "./helpers";
 import { z, ZodError } from "zod";
-
-const DEFAULT_SKU = "jetkvm-v2";
-type ReleaseType = "app" | "system";
-
-/**
- * Recovery image filename per SKU. eMMC variants are flashed via DFU + the
- * Rockchip upgrade tool (RKDevTool format), while SDMMC variants are written
- * to a microSD with balenaEtcher (dd-format zip). Add a new SKU here when
- * shipping a new hardware variant; unmapped SKUs are rejected so a typo
- * doesn't silently fall back to the wrong artifact.
- */
-const RECOVERY_ARTIFACT_BY_SKU: Record<string, string> = {
-  "jetkvm-v2": "update.img",
-  "jetkvm-v2-sdmmc": "update_sd.img.zip",
-};
+import {
+  DEFAULT_SKU,
+  artifactFor,
+  isKnownSku,
+  legacyCompatibleSkus,
+  otaArtifacts,
+  type OtaKind,
+  type Artifact,
+} from "./skus";
 
 /** Query param schema builders for common patterns */
 const queryString = () =>
@@ -50,7 +44,8 @@ const querySku = () =>
   z
     .string()
     .optional()
-    .transform(v => v || DEFAULT_SKU);
+    .transform(v => v || DEFAULT_SKU)
+    .refine(isKnownSku, { error: issue => `Unknown SKU "${issue.input}"` });
 
 /**
  * Schema for redirect endpoints (RetrieveLatestApp, RetrieveLatestSystemRecovery).
@@ -177,10 +172,7 @@ async function s3ObjectExists(key: string): Promise<boolean> {
  * Checks if a version was uploaded with SKU folder structure.
  * Returns true if any skus/ subfolder exists for this version.
  */
-async function versionHasSkuSupport(
-  prefix: "app" | "system",
-  version: string,
-): Promise<boolean> {
+async function versionHasSkuSupport(prefix: string, version: string): Promise<boolean> {
   const response = await s3Client.send(
     new ListObjectsV2Command({
       Bucket: bucketName,
@@ -199,25 +191,23 @@ async function versionHasSkuSupport(
  *   - Fails if the requested SKU is not available
  *
  * For legacy versions (no skus/ folder):
- *   - Returns legacy path for default SKU
- *   - Fails for non-default SKUs because legacy firmware predates
+ *   - Returns legacy path for SKUs that predate the SKU layout
+ *   - Fails for every other SKU because legacy firmware predates
  *     that hardware and may not be compatible
  *
- * @param prefix - The prefix folder ("app" or "system")
+ * @param prefix - The R2 folder the artifact lives under
  * @param version - The version string
  * @param sku - SKU identifier (defaults to jetkvm-v2 from schema)
- * @param artifactOverride - Optional artifact name override (defaults based on prefix)
+ * @param file - The artifact's file name
  */
 async function resolveArtifactPath(
-  prefix: "app" | "system",
+  prefix: string,
   version: string,
   sku: string,
-  artifactOverride?: string,
+  file: string,
 ): Promise<string> {
-  const artifact = artifactOverride ?? (prefix === "app" ? "jetkvm_app" : "system.tar");
-
   if (await versionHasSkuSupport(prefix, version)) {
-    const skuPath = `${prefix}/${version}/skus/${sku}/${artifact}`;
+    const skuPath = `${prefix}/${version}/skus/${sku}/${file}`;
 
     if (await s3ObjectExists(skuPath)) {
       return skuPath;
@@ -228,11 +218,11 @@ async function resolveArtifactPath(
 
   // SKU defaults to "jetkvm-v2" via zod schema when not provided.
   //
-  // For legacy versions (pre-SKU folder structure), we only serve the default SKU.
-  // This prevents newer hardware variants from rolling back to old firmware
-  // that may not have compatible binaries for their hardware.
-  if (sku === DEFAULT_SKU) {
-    return `${prefix}/${version}/${artifact}`;
+  // For legacy versions (pre-SKU folder structure), we only serve the SKUs
+  // that predate the layout. This prevents newer hardware variants from
+  // rolling back to old firmware that may not have compatible binaries.
+  if (legacyCompatibleSkus(prefix).includes(sku)) {
+    return `${prefix}/${version}/${file}`;
   }
 
   throw noArtifactForSku(version, sku);
@@ -243,16 +233,16 @@ async function resolveArtifactPath(
  * Results are cached for 5 minutes.
  */
 async function resolveSigUrl(
-  prefix: "app" | "system",
+  artifact: Artifact,
   version: string,
   sku: string,
 ): Promise<string | undefined> {
-  const cacheKey = `${prefix}-${version}-${sku}`;
+  const cacheKey = `${artifact.prefix}-${version}-${sku}`;
   const cached = sigUrlCache.get(cacheKey);
   if (cached !== undefined) return cached === MISSING_SIG_URL ? undefined : cached;
 
   try {
-    const path = await resolveArtifactPath(prefix, version, sku);
+    const path = await resolveArtifactPath(artifact.prefix, version, sku, artifact.file);
     const sigKey = `${path}.sig`;
     if (await s3ObjectExists(sigKey)) {
       const url = `${baseUrl}/${sigKey}`;
@@ -278,33 +268,27 @@ async function resolveSigUrl(
  * Transient S3 errors are logged but don't block the response — sigUrl is optional.
  */
 async function enrichWithSigUrls(release: Release, sku: string): Promise<void> {
-  const [appSigUrl, systemSigUrl] = await Promise.all([
-    release.appVersion
-      ? resolveSigUrl("app", release.appVersion, sku).catch(e => {
-          console.error(`Failed to resolve app sig URL for ${release.appVersion}:`, e);
-          return undefined;
-        })
-      : undefined,
-    release.systemVersion
-      ? resolveSigUrl("system", release.systemVersion, sku).catch(e => {
-          console.error(
-            `Failed to resolve system sig URL for ${release.systemVersion}:`,
-            e,
-          );
-          return undefined;
-        })
-      : undefined,
-  ]);
-  if (appSigUrl) release.appSigUrl = appSigUrl;
-  if (systemSigUrl) release.systemSigUrl = systemSigUrl;
+  await Promise.all(
+    otaArtifacts(sku).map(async ({ kind, prefix, file }) => {
+      const version = release[`${kind}Version`];
+      if (!version) return;
+      try {
+        const sigUrl = await resolveSigUrl({ prefix, file }, version, sku);
+        if (sigUrl) release[`${kind}SigUrl`] = sigUrl;
+      } catch (e) {
+        console.error(`Failed to resolve ${kind} sig URL for ${version}:`, e);
+      }
+    }),
+  );
 }
 
 async function getLatestVersion(
-  prefix: "app" | "system",
+  artifact: Artifact,
   includePrerelease: boolean,
   maxSatisfying: string = "*",
   sku: string,
 ): Promise<ReleaseMetadata> {
+  const { prefix } = artifact;
   const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
   const cached = releaseCache.get(cacheKey);
   if (cached) return cached;
@@ -340,7 +324,7 @@ async function getLatestVersion(
     );
   }
 
-  const selectedPath = await resolveArtifactPath(prefix, latestVersion, sku);
+  const selectedPath = await resolveArtifactPath(prefix, latestVersion, sku, artifact.file);
   const url = `${baseUrl}/${selectedPath}`;
 
   const hashResponse = await s3Client.send(
@@ -375,25 +359,24 @@ interface Release {
   systemSigUrl?: string;
 }
 
-function setAppRelease(release: Release, appRelease: ReleaseMetadata) {
-  release.appVersion = appRelease.version;
-  release.appUrl = appRelease.url;
-  release.appHash = appRelease.hash;
+type OtaReleases = Partial<Record<OtaKind, ReleaseMetadata>>;
+
+function setOtaRelease(release: Release, kind: OtaKind, metadata: ReleaseMetadata) {
+  release[`${kind}Version`] = metadata.version;
+  release[`${kind}Url`] = metadata.url;
+  release[`${kind}Hash`] = metadata.hash;
 }
 
-function setSystemRelease(release: Release, systemRelease: ReleaseMetadata) {
-  release.systemVersion = systemRelease.version;
-  release.systemUrl = systemRelease.url;
-  release.systemHash = systemRelease.hash;
-}
-
-function toRelease(
-  appRelease?: ReleaseMetadata,
-  systemRelease?: ReleaseMetadata,
-): Release {
+/**
+ * Builds the response object. Artifacts a product does not ship are left out
+ * entirely: the device treats an absent one as "not offered".
+ */
+function toRelease(offers: OtaReleases): Release {
   const release: Partial<Release> = {};
-  if (appRelease) setAppRelease(release as Release, appRelease);
-  if (systemRelease) setSystemRelease(release as Release, systemRelease);
+  for (const kind of ["app", "system"] as const) {
+    const metadata = offers[kind];
+    if (metadata) setOtaRelease(release as Release, kind, metadata);
+  }
   return release as Release;
 }
 
@@ -430,20 +413,25 @@ async function addStableSigUrls(release: Release): Promise<void> {
   if (systemSigUrl) release.systemSigUrl = systemSigUrl;
 }
 
+type VersionConstraints = Record<OtaKind, string>;
+
 async function getReleaseFromS3(
   includePrerelease: boolean,
-  {
-    appVersion,
-    systemVersion,
-    sku,
-  }: { appVersion?: string; systemVersion?: string; sku: string },
+  sku: string,
+  constraints: VersionConstraints,
 ): Promise<Release> {
-  const [appRelease, systemRelease] = await Promise.all([
-    getLatestVersion("app", includePrerelease, appVersion, sku),
-    getLatestVersion("system", includePrerelease, systemVersion, sku),
-  ]);
-
-  return toRelease(appRelease, systemRelease);
+  const offers: OtaReleases = {};
+  await Promise.all(
+    otaArtifacts(sku).map(async ({ kind, prefix, file }) => {
+      offers[kind] = await getLatestVersion(
+        { prefix, file },
+        includePrerelease,
+        constraints[kind],
+        sku,
+      );
+    }),
+  );
+  return toRelease(offers);
 }
 
 async function isDeviceEligibleForLatestRelease(
@@ -484,15 +472,15 @@ function dbReleaseToMetadata(release: DbRelease, sku: string): ReleaseMetadata {
   };
 }
 
-async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
+async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease> {
   const rolledOutReleases = await prisma.release.findMany({
-    where: { type, rolloutPercentage: 100 },
+    where: { type: prefix, rolloutPercentage: 100 },
     select: compatibleReleaseSelect(sku),
   });
 
   if (rolledOutReleases.length === 0) {
     throw new InternalServerError(
-      `No default release found for type ${type} and SKU "${sku}"`,
+      `No default release found for type ${prefix} and SKU "${sku}"`,
     );
   }
 
@@ -503,7 +491,7 @@ async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRele
 
   if (compatibleReleases.length === 0) {
     throw new NotFoundError(
-      `No default ${type} release available for SKU "${sku}"`,
+      `No default ${prefix} release available for SKU "${sku}"`,
     );
   }
 
@@ -516,29 +504,29 @@ async function getDefaultRelease(type: ReleaseType, sku: string): Promise<DbRele
 
   if (!latestDefaultRelease) {
     throw new InternalServerError(
-      `No default release found for type ${type} and SKU "${sku}"`,
+      `No default release found for type ${prefix} and SKU "${sku}"`,
     );
   }
 
   return latestDefaultRelease;
 }
 
-async function getLatestRelease(type: ReleaseType, sku: string): Promise<DbRelease> {
-  return getReleaseByRange(type, sku, "*");
+async function getLatestRelease(prefix: string, sku: string): Promise<DbRelease> {
+  return getReleaseByRange(prefix, sku, "*");
 }
 
 async function getReleaseByRange(
-  type: ReleaseType,
+  prefix: string,
   sku: string,
   range: string,
 ): Promise<DbRelease> {
   const releases = await prisma.release.findMany({
-    where: { type },
+    where: { type: prefix },
     select: compatibleReleaseSelect(sku),
   });
 
   if (releases.length === 0) {
-    throw new NotFoundError(`No release found for type ${type} and SKU "${sku}"`);
+    throw new NotFoundError(`No release found for type ${prefix} and SKU "${sku}"`);
   }
 
   const latestVersion = semver.maxSatisfying(
@@ -547,12 +535,12 @@ async function getReleaseByRange(
   ) as string;
 
   if (!latestVersion) {
-    throw new NotFoundError(`No ${type} release found that satisfies ${range}`);
+    throw new NotFoundError(`No ${prefix} release found that satisfies ${range}`);
   }
 
   const latestRelease = releases.find(r => r.version === latestVersion);
   if (!latestRelease) {
-    throw new NotFoundError(`No ${type} release found that satisfies ${range}`);
+    throw new NotFoundError(`No ${prefix} release found that satisfies ${range}`);
   }
 
   return latestRelease;
@@ -560,20 +548,20 @@ async function getReleaseByRange(
 
 export async function Retrieve(req: Request, res: Response) {
   const query = parseQuery(retrieveQuerySchema, req);
+  const { sku, deviceId } = query;
 
-  const appVersion = toSemverRange(query.appVersion);
-  const systemVersion = toSemverRange(query.systemVersion);
-  const skipRollout = appVersion !== "*" || systemVersion !== "*";
+  const artifacts = otaArtifacts(sku);
+  const constraints: VersionConstraints = {
+    app: toSemverRange(query.appVersion),
+    system: toSemverRange(query.systemVersion),
+  };
+  const skipRollout = artifacts.some(({ kind }) => constraints[kind] !== "*");
 
   // Prereleases are not imported into the DB by the stable sync script.
   if (query.prerelease) {
     let remoteRelease: Release;
     try {
-      remoteRelease = await getReleaseFromS3(query.prerelease, {
-        appVersion,
-        systemVersion,
-        sku: query.sku,
-      });
+      remoteRelease = await getReleaseFromS3(query.prerelease, sku, constraints);
     } catch (error) {
       console.error(error);
       if (error instanceof NotFoundError) {
@@ -582,64 +570,47 @@ export async function Retrieve(req: Request, res: Response) {
       throw new InternalServerError(`Failed to get the latest release from S3: ${error}`);
     }
 
-    await enrichWithSigUrls(remoteRelease, query.sku);
+    await enrichWithSigUrls(remoteRelease, sku);
     return res.json(remoteRelease);
   }
 
   // Version-constrained stable requests skip rollout but still read DB metadata.
   if (skipRollout) {
-    const responseJson = toRelease(
-      dbReleaseToMetadata(
-        await getReleaseByRange("app", query.sku, appVersion),
-        query.sku,
-      ),
-      dbReleaseToMetadata(
-        await getReleaseByRange("system", query.sku, systemVersion),
-        query.sku,
-      ),
-    );
+    const constrained: OtaReleases = {};
+    for (const { kind, prefix } of artifacts) {
+      constrained[kind] = dbReleaseToMetadata(
+        await getReleaseByRange(prefix, sku, constraints[kind]),
+        sku,
+      );
+    }
+    const responseJson = toRelease(constrained);
     await addStableSigUrls(responseJson);
     return res.json(responseJson);
   }
-
-  const [latestAppRelease, latestSystemRelease, defaultAppRelease, defaultSystemRelease] =
-    await Promise.all([
-      getLatestRelease("app", query.sku),
-      getLatestRelease("system", query.sku),
-      getDefaultRelease("app", query.sku),
-      getDefaultRelease("system", query.sku),
-    ]);
 
   // Background update checks follow rollout percentages so new releases roll
   // out gradually. Devices outside the bucket fall back to the default (the
   // newest 100%-rolled-out release). If the latest release lacks a compatible
   // artifact for this SKU (e.g. a SKU-specific build hasn't shipped yet) we
   // silently keep the default rather than 404 the whole request.
-  const responseJson = toRelease(
-    dbReleaseToMetadata(defaultAppRelease, query.sku),
-    dbReleaseToMetadata(defaultSystemRelease, query.sku),
+  const offered: OtaReleases = {};
+  await Promise.all(
+    artifacts.map(async ({ kind, prefix }) => {
+      // Sequential on purpose: when the prefix has no releases at all, the
+      // 404 from the latest lookup must win over the 500 from the default
+      // lookup, which the parallel form left to query timing.
+      const latest = await getLatestRelease(prefix, sku);
+      const fallback = await getDefaultRelease(prefix, sku);
+
+      const useLatest =
+        latest.artifacts.length > 0 &&
+        (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
+
+      offered[kind] = dbReleaseToMetadata(useLatest ? latest : fallback, sku);
+    }),
   );
 
-  if (
-    latestAppRelease.artifacts.length > 0 &&
-    (await isDeviceEligibleForLatestRelease(
-      latestAppRelease.rolloutPercentage,
-      query.deviceId,
-    ))
-  ) {
-    setAppRelease(responseJson, dbReleaseToMetadata(latestAppRelease, query.sku));
-  }
-
-  if (
-    latestSystemRelease.artifacts.length > 0 &&
-    (await isDeviceEligibleForLatestRelease(
-      latestSystemRelease.rolloutPercentage,
-      query.deviceId,
-    ))
-  ) {
-    setSystemRelease(responseJson, dbReleaseToMetadata(latestSystemRelease, query.sku));
-  }
-
+  const responseJson = toRelease(offered);
   await addStableSigUrls(responseJson);
 
   return res.json(responseJson);
@@ -668,25 +639,31 @@ function releaseCacheKey(prefix: string, query: LatestQuery): string {
   return `${prefix}-${query.prerelease ? "pre" : "stable"}-${query.sku}`;
 }
 
+/**
+ * 302 to the newest recovery image for the requested SKU. The product table
+ * says which prefix holds it and what it is called. The route keeps its
+ * historical name.
+ */
 export const RetrieveLatestSystemRecovery = cachedRedirect(
-  query => releaseCacheKey("system-recovery", query),
+  query => releaseCacheKey("recovery", query),
   async query => {
-    const recoveryArtifact = RECOVERY_ARTIFACT_BY_SKU[query.sku];
-    if (!recoveryArtifact) {
-      throw new BadRequestError(`Unsupported SKU "${query.sku}"`);
+    const recovery = artifactFor(query.sku, "recovery");
+    if (!recovery) {
+      throw new BadRequestError(
+        `SKU "${query.sku}" has no downloadable recovery image`,
+      );
     }
 
-    // Get the latest system recovery image from S3. It's stored in the system/ folder.
     const listCommand = new ListObjectsV2Command({
       Bucket: bucketName,
-      Prefix: "system/",
+      Prefix: `${recovery.prefix}/`,
       Delimiter: "/",
     });
     const response = await s3Client.send(listCommand);
 
     // Extract version folder names
     if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-      throw new NotFoundError(`No versions found under prefix system recovery image`);
+      throw new NotFoundError(`No versions found under prefix ${recovery.prefix} for recovery`);
     }
 
     // Get the latest version
@@ -699,16 +676,14 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
     }) as string;
 
     if (!latestVersion) {
-      throw new NotFoundError("No valid system recovery versions found");
+      throw new NotFoundError(`No valid ${recovery.prefix} recovery versions found`);
     }
 
-    // Resolve the artifact path with SKU support; the artifact filename
-    // depends on the SKU (eMMC = update.img, SDMMC = update_sd.img.zip).
     const artifactPath = await resolveArtifactPath(
-      "system",
+      recovery.prefix,
       latestVersion,
       query.sku,
-      recoveryArtifact,
+      recovery.file,
     );
 
     const [firmwareFile, hashFile] = await Promise.all([
@@ -729,71 +704,92 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
 
     if (!firmwareFile.Body || !hashFile.Body) {
       throw new NotFoundError(
-        `No system recovery image or hash file not found for version ${latestVersion}`,
+        `Recovery image or hash file not found for version ${latestVersion}`,
       );
     }
 
-    await verifyHash(firmwareFile, hashFile, "system recovery image hash does not match");
+    await verifyHash(firmwareFile, hashFile, "recovery image hash does not match");
 
-    console.log("system recovery image hash matches", latestVersion);
+    console.log("recovery image hash matches", latestVersion);
 
     return `${baseUrl}/${artifactPath}`;
   },
 );
 
-export const RetrieveLatestApp = cachedRedirect(
-  query => releaseCacheKey("app", query),
-  async query => {
-    // Get the latest version
-    const listCommand = new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: "app/",
-      Delimiter: "/",
-    });
-    const response = await s3Client.send(listCommand);
+/**
+ * 302 to the newest over-the-air artifact of one kind for the requested SKU,
+ * after verifying the object against its .sha256 sibling. The product table
+ * says which prefix holds it, so the same URL serves every product. Used by
+ * build tooling (rv1106-system pulls the app binary into the system image)
+ * and by flashing scripts.
+ */
+function latestArtifactRedirect(kind: OtaKind) {
+  return cachedRedirect(
+    query => releaseCacheKey(kind, query),
+    async query => {
+      const artifact = artifactFor(query.sku, kind);
+      if (!artifact) {
+        throw new BadRequestError(`SKU "${query.sku}" has no ${kind} artifact`);
+      }
+      const { prefix } = artifact;
 
-    if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-      throw new NotFoundError("No app versions found");
-    }
+      const listCommand = new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: `${prefix}/`,
+        Delimiter: "/",
+      });
+      const response = await s3Client.send(listCommand);
 
-    const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(
-      v => semver.valid(v),
-    );
+      if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
+        throw new NotFoundError(`No ${prefix} versions found`);
+      }
 
-    const latestVersion = semver.maxSatisfying(versions, "*", {
-      includePrerelease: query.prerelease,
-    }) as string;
+      const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(
+        v => semver.valid(v),
+      );
 
-    if (!latestVersion) {
-      throw new NotFoundError("No valid app versions found");
-    }
+      const latestVersion = semver.maxSatisfying(versions, "*", {
+        includePrerelease: query.prerelease,
+      }) as string;
 
-    // Resolve the artifact path with SKU support
-    const artifactPath = await resolveArtifactPath("app", latestVersion, query.sku);
+      if (!latestVersion) {
+        throw new NotFoundError(`No valid ${prefix} versions found`);
+      }
 
-    // Get the app file and its hash
-    const [appFile, hashFile] = await Promise.all([
-      s3Client.send(
-        new GetObjectCommand({
-          Bucket: bucketName,
-          Key: artifactPath,
-        }),
-      ),
-      s3Client.send(
-        new GetObjectCommand({
-          Bucket: bucketName,
-          Key: `${artifactPath}.sha256`,
-        }),
-      ),
-    ]);
+      const artifactPath = await resolveArtifactPath(
+        prefix,
+        latestVersion,
+        query.sku,
+        artifact.file,
+      );
 
-    if (!appFile.Body || !hashFile.Body) {
-      throw new NotFoundError(`App or hash file not found for version ${latestVersion}`);
-    }
+      const [artifactFile, hashFile] = await Promise.all([
+        s3Client.send(
+          new GetObjectCommand({
+            Bucket: bucketName,
+            Key: artifactPath,
+          }),
+        ),
+        s3Client.send(
+          new GetObjectCommand({
+            Bucket: bucketName,
+            Key: `${artifactPath}.sha256`,
+          }),
+        ),
+      ]);
 
-    await verifyHash(appFile, hashFile, "app hash does not match");
+      if (!artifactFile.Body || !hashFile.Body) {
+        throw new NotFoundError(
+          `${prefix} artifact or hash file not found for version ${latestVersion}`,
+        );
+      }
 
-    console.log("App hash matches", latestVersion);
-    return `${baseUrl}/${artifactPath}`;
-  },
-);
+      await verifyHash(artifactFile, hashFile, `${prefix} hash does not match`);
+
+      console.log(`${prefix} hash matches`, latestVersion);
+      return `${baseUrl}/${artifactPath}`;
+    },
+  );
+}
+
+export const RetrieveLatestApp = latestArtifactRedirect("app");
