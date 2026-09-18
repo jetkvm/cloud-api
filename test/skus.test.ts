@@ -13,10 +13,11 @@ import {
 } from "../src/skus";
 
 const JETKVM_SKUS = ["jetkvm-v2", "jetkvm-v2-sdmmc"];
+const MINI_SKUS = ["jetkvm-mini-ethernet", "jetkvm-mini-wireless"];
 
 describe("SKU table", () => {
-  it("registers the eMMC and SDMMC JetKVM variants, eMMC first as the default", () => {
-    expect(KNOWN_SKUS).toEqual(JETKVM_SKUS);
+  it("registers both JetKVM variants first, then both Mini variants", () => {
+    expect(KNOWN_SKUS).toEqual([...JETKVM_SKUS, ...MINI_SKUS]);
     expect(KNOWN_SKUS[0]).toBe(DEFAULT_SKU);
   });
 
@@ -29,7 +30,16 @@ describe("SKU table", () => {
     }
   });
 
-  it("keeps the recovery image with the system artifact, named per variant", () => {
+  it("gives both Mini variants one over-the-air artifact, the firmware image as system", () => {
+    for (const sku of MINI_SKUS) {
+      expect(otaArtifacts(sku)).toEqual([
+        { kind: "system", prefix: "mini", file: "jetkvm-mini.bin" },
+      ]);
+      expect(artifactFor(sku, "app")).toBeUndefined();
+    }
+  });
+
+  it("keeps the JetKVM recovery image with the system artifact and gives the Mini none", () => {
     expect(artifactFor("jetkvm-v2", "recovery")).toEqual({
       prefix: "system",
       file: "update.img",
@@ -38,30 +48,36 @@ describe("SKU table", () => {
       prefix: "system",
       file: "update_sd.img.zip",
     });
+    for (const sku of MINI_SKUS) {
+      expect(artifactFor(sku, "recovery")).toBeUndefined();
+    }
   });
 
-  it("syncs the app and system prefixes, each holding one over-the-air file", () => {
-    expect(OTA_PREFIXES).toEqual(["app", "system"]);
+  it("syncs three prefixes, each holding one over-the-air file", () => {
+    expect(OTA_PREFIXES).toEqual(["app", "system", "mini"]);
     expect(otaFileForPrefix("app")).toBe("jetkvm_app");
     expect(otaFileForPrefix("system")).toBe("system.tar");
-    expect(() => otaFileForPrefix("nope")).toThrow('Prefix "nope" holds 0');
+    expect(otaFileForPrefix("mini")).toBe("jetkvm-mini.bin");
   });
 
-  it("lists every JetKVM variant as a consumer of both prefixes", () => {
+  it("lists the variants that consume each prefix", () => {
     expect(skusForPrefix("app")).toEqual(JETKVM_SKUS);
     expect(skusForPrefix("system")).toEqual(JETKVM_SKUS);
+    expect(skusForPrefix("mini")).toEqual(MINI_SKUS);
   });
 
-  it("only allows the original hardware on the pre-SKU layout", () => {
+  it("only allows the original hardware on the pre-SKU layout, and no mini at all", () => {
     expect(legacyCompatibleSkus("app")).toEqual([DEFAULT_SKU]);
     expect(legacyCompatibleSkus("system")).toEqual([DEFAULT_SKU]);
-    expect(legacyCompatibleSkus("nope")).toEqual([]);
+    expect(legacyCompatibleSkus("mini")).toEqual([]);
   });
 
   it("rejects SKUs that are not registered, including prototype keys", () => {
-    expect(isKnownSku("jetkvm-v3")).toBe(false);
+    expect(isKnownSku("jetkvm-mini-lte")).toBe(false);
     expect(isKnownSku("__proto__")).toBe(false);
     expect(isKnownSku("constructor")).toBe(false);
-    expect(() => artifactFor("jetkvm-v3", "app")).toThrow('Unknown SKU "jetkvm-v3"');
+    expect(() => artifactFor("jetkvm-mini-lte", "system")).toThrow(
+      'Unknown SKU "jetkvm-mini-lte"',
+    );
   });
 });

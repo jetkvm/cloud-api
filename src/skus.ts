@@ -11,9 +11,9 @@
  * is `<prefix>/<version>/skus/<sku>/<file>` (+ .sha256, optional .sig).
  *
  * Keep this table in sync with the firmware build tooling
- * (rv1106-system/scripts/common.sh, kvm/Makefile APP_SKUS). Unknown SKUs are
- * rejected at the API boundary so a typo can never fall back to firmware
- * built for different hardware.
+ * (rv1106-system/scripts/common.sh, kvm/Makefile APP_SKUS, the kvm-mini
+ * release script). Unknown SKUs are rejected at the API boundary so a typo
+ * can never fall back to firmware built for different hardware.
  */
 
 export type OtaKind = "app" | "system";
@@ -46,6 +46,16 @@ export const SKUS: Record<string, SkuArtifacts> = {
     app: "app/jetkvm_app",
     system: "system/system.tar",
     recovery: "system/update_sd.img.zip",
+  },
+  // JetKVM Mini (ESP32-P4). One firmware image is the whole system:
+  // FreeRTOS, drivers, the application, the web UI and the ESP32-C5 Wi-Fi
+  // co-processor firmware. There is no separate app. The Ethernet (IP101)
+  // and wireless (ESP32-C5 over SDIO) boards are separate builds.
+  "jetkvm-mini-ethernet": {
+    system: "mini/jetkvm-mini.bin",
+  },
+  "jetkvm-mini-wireless": {
+    system: "mini/jetkvm-mini.bin",
   },
 };
 

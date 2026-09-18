@@ -14,6 +14,8 @@ import { createAsyncIterable, s3Mock, testPrisma } from "./setup";
 
 const DEFAULT_SKU = "jetkvm-v2";
 const SDMMC_SKU = "jetkvm-v2-sdmmc";
+const MINI_ETHERNET_SKU = "jetkvm-mini-ethernet";
+const MINI_WIRELESS_SKU = "jetkvm-mini-wireless";
 const SYNC_BUCKET = "test-bucket";
 const SYNC_BASE_URL = "https://cdn.test.com";
 const syncS3Client = new S3Client({});
@@ -119,6 +121,46 @@ describe("sync-releases script", () => {
     ]);
   });
 
+  it("collects mini artifacts for the mini SKUs only", async () => {
+    mockS3SkuVersion("mini", "1.0.0", MINI_ETHERNET_SKU, "mini-ethernet-hash");
+    mockS3SkuVersion("mini", "1.0.0", MINI_WIRELESS_SKU, "mini-wireless-hash");
+    // A stray JetKVM upload under mini/ must not be picked up.
+    mockS3SkuVersion("mini", "1.0.0", DEFAULT_SKU, "stray-hash");
+
+    const artifacts = await collectReleaseArtifacts(
+      { s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      "mini",
+      "1.0.0",
+    );
+
+    expect(artifacts).toEqual([
+      {
+        url: `https://cdn.test.com/mini/1.0.0/skus/${MINI_ETHERNET_SKU}/jetkvm-mini.bin`,
+        hash: "mini-ethernet-hash",
+        compatibleSkus: [MINI_ETHERNET_SKU],
+      },
+      {
+        url: `https://cdn.test.com/mini/1.0.0/skus/${MINI_WIRELESS_SKU}/jetkvm-mini.bin`,
+        hash: "mini-wireless-hash",
+        compatibleSkus: [MINI_WIRELESS_SKU],
+      },
+    ]);
+  });
+
+  it("ignores a mini version uploaded without the skus/ layout", async () => {
+    mockS3HashFile("mini", "1.0.1", "legacy-mini-hash");
+
+    const artifacts = await collectReleaseArtifacts(
+      { s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      "mini",
+      "1.0.1",
+    );
+
+    expect(artifacts).toEqual([]);
+  });
+
   it("creates new releases at 10% with their S3 artifacts and skips already-synced versions", async () => {
     const version = "9.9.4";
 
@@ -136,6 +178,7 @@ describe("sync-releases script", () => {
 
     mockS3ListVersions("app", [version, "10.0.0-beta.1"]);
     mockS3ListVersions("system", [version]);
+    mockS3ListVersions("mini", []);
     mockS3HashFile("app", version, "app-hash");
     mockS3SkuVersion("system", version, DEFAULT_SKU, "system-hash-v2");
     mockS3SkuVersion("system", version, SDMMC_SKU, "system-hash-sdmmc");

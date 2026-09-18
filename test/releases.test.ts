@@ -15,12 +15,14 @@ import {
   RetrieveLatestSystemRecovery,
   clearCaches,
 } from "../src/releases";
-import { otaFileForPrefix } from "../src/skus";
+import { legacyCompatibleSkus, otaFileForPrefix } from "../src/skus";
 
 type ReleaseType = string;
 
 const DEFAULT_SKU = "jetkvm-v2";
 const SDMMC_SKU = "jetkvm-v2-sdmmc";
+const MINI_ETHERNET_SKU = "jetkvm-mini-ethernet";
+const MINI_WIRELESS_SKU = "jetkvm-mini-wireless";
 
 // Helper to create mock Request
 function createMockRequest(query: Record<string, string | undefined> = {}): Request {
@@ -179,7 +181,7 @@ function artifactFileName(type: ReleaseType) {
 
 function artifactPath(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
   const fileName = artifactFileName(type);
-  if (sku === DEFAULT_SKU) {
+  if (legacyCompatibleSkus(type).includes(sku)) {
     return `${type}/${version}/${fileName}`;
   }
   return `${type}/${version}/skus/${sku}/${fileName}`;
@@ -665,6 +667,133 @@ describe("Retrieve handler", () => {
     });
   });
 
+  describe("mini product (one over-the-air artifact)", () => {
+    function miniArtifacts(version: string) {
+      return [
+        releaseArtifact("mini", version, MINI_ETHERNET_SKU),
+        releaseArtifact("mini", version, MINI_WIRELESS_SKU),
+      ];
+    }
+
+    it("serves the mini firmware as the system artifact and omits the app fields", async () => {
+      await createDbRelease("mini", "1.0.0", 100, miniArtifacts("1.0.0"));
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU }), res);
+
+      expect(jsonBody(res)).toEqual({
+        systemVersion: "1.0.0",
+        systemUrl: artifactUrl("mini", "1.0.0", MINI_ETHERNET_SKU),
+        systemHash: "mini-1.0.0-jetkvm-mini-ethernet-hash",
+      });
+    });
+
+    it("selects the artifact for the wireless variant", async () => {
+      await createDbRelease("mini", "1.0.0", 100, miniArtifacts("1.0.0"));
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "mini-wireless", sku: MINI_WIRELESS_SKU }), res);
+
+      expect(jsonBody(res)).toMatchObject({
+        systemUrl: artifactUrl("mini", "1.0.0", MINI_WIRELESS_SKU),
+        systemHash: "mini-1.0.0-jetkvm-mini-wireless-hash",
+      });
+    });
+
+    it("ignores JetKVM app/system releases and honours mini rollout state", async () => {
+      await createDbRelease("mini", "1.0.0", 100, miniArtifacts("1.0.0"));
+      await createDbRelease("mini", "1.1.0", 0, miniArtifacts("1.1.0"));
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU }), res);
+
+      // Seed data has app/system 1.2.0 in rollout; none of it leaks into the
+      // mini offer, and the 0% mini release is held back.
+      expect(jsonBody(res)).toMatchObject({ systemVersion: "1.0.0" });
+      expect(jsonBody(res)).not.toHaveProperty("appVersion");
+    });
+
+    it("honours a systemVersion constraint and ignores appVersion", async () => {
+      await createDbRelease("mini", "1.0.0", 100, miniArtifacts("1.0.0"));
+      await createDbRelease("mini", "1.1.0", 0, miniArtifacts("1.1.0"));
+
+      const res = createMockResponse();
+      await Retrieve(
+        createMockRequest({
+          deviceId: "mini-ethernet",
+          sku: MINI_ETHERNET_SKU,
+          systemVersion: "1.1.0",
+          appVersion: "9.9.9",
+        }),
+        res,
+      );
+
+      expect(jsonBody(res)).toEqual({
+        systemVersion: "1.1.0",
+        systemUrl: artifactUrl("mini", "1.1.0", MINI_ETHERNET_SKU),
+        systemHash: "mini-1.1.0-jetkvm-mini-ethernet-hash",
+      });
+    });
+
+    it("includes systemSigUrl from the mini artifact's .sig sibling", async () => {
+      await createDbRelease("mini", "1.0.0", 100, miniArtifacts("1.0.0"));
+      mockArtifactSig("mini", "1.0.0", MINI_ETHERNET_SKU);
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU }), res);
+
+      expect(jsonBody(res)).toMatchObject({
+        systemSigUrl: `${artifactUrl("mini", "1.0.0", MINI_ETHERNET_SKU)}.sig`,
+      });
+      expect(jsonBody(res)).not.toHaveProperty("appSigUrl");
+    });
+
+    it("reads prereleases from the mini/ prefix only", async () => {
+      mockS3ListVersions("mini", ["1.0.0", "1.1.0-beta.1"]);
+      mockS3SkuVersion("mini", "1.1.0-beta.1", MINI_ETHERNET_SKU, "mini-beta-hash", {
+        hasSig: true,
+      });
+
+      const res = createMockResponse();
+      await Retrieve(
+        createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU, prerelease: "true" }),
+        res,
+      );
+
+      expect(jsonBody(res)).toEqual({
+        systemVersion: "1.1.0-beta.1",
+        systemUrl: `https://cdn.test.com/mini/1.1.0-beta.1/skus/${MINI_ETHERNET_SKU}/jetkvm-mini.bin`,
+        systemHash: "mini-beta-hash",
+        systemSigUrl: `https://cdn.test.com/mini/1.1.0-beta.1/skus/${MINI_ETHERNET_SKU}/jetkvm-mini.bin.sig`,
+      });
+      // The app/ and system/ prefixes were never listed.
+      expect(
+        s3Mock.commandCalls(ListObjectsV2Command, { Prefix: "app/" }).length +
+          s3Mock.commandCalls(ListObjectsV2Command, { Prefix: "system/" }).length,
+      ).toBe(0);
+    });
+
+    it("never serves a pre-SKU mini layout", async () => {
+      mockS3ListVersions("mini", ["1.0.0"]);
+      mockS3HashFile("mini", "1.0.0", "legacy-mini-hash");
+
+      const res = createMockResponse();
+      await expect(
+        Retrieve(
+          createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU, prerelease: "true" }),
+          res,
+        ),
+      ).rejects.toThrow('Version 1.0.0 has no artifact for SKU "jetkvm-mini-ethernet"');
+    });
+
+    it("fails when no mini release exists for the SKU", async () => {
+      const res = createMockResponse();
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "mini-ethernet", sku: MINI_ETHERNET_SKU }), res),
+      ).rejects.toThrow(NotFoundError);
+    });
+  });
+
   describe("S3 non-NotFoundError handling", () => {
     it("should wrap non-NotFoundError in InternalServerError", async () => {
       const req = createMockRequest({ deviceId: "device-123", prerelease: "true" });
@@ -1070,6 +1199,24 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
   });
 });
 
+describe("RetrieveLatestApp for the mini product", () => {
+  beforeEach(() => {
+    clearCaches();
+    s3Mock.reset();
+  });
+
+  it("rejects mini SKUs, which have no app artifact, before touching S3", async () => {
+    const res = createMockResponse();
+    await expect(
+      RetrieveLatestApp(createMockRequest({ sku: MINI_WIRELESS_SKU }), res),
+    ).rejects.toThrow(BadRequestError);
+    await expect(
+      RetrieveLatestApp(createMockRequest({ sku: MINI_WIRELESS_SKU }), res),
+    ).rejects.toThrow('SKU "jetkvm-mini-wireless" has no app artifact');
+    expect(s3Mock.calls().length).toBe(0);
+  });
+});
+
 describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
   beforeEach(() => {
     s3Mock.reset();
@@ -1310,6 +1457,18 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
       );
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
         'Unknown SKU "jetkvm-future"',
+      );
+    });
+
+    it("should throw BadRequestError for a SKU without a recovery image", async () => {
+      const req = createMockRequest({ sku: MINI_ETHERNET_SKU });
+      const res = createMockResponse();
+
+      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
+        BadRequestError,
+      );
+      await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
+        'SKU "jetkvm-mini-ethernet" has no downloadable recovery image',
       );
     });
 
