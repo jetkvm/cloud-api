@@ -3,6 +3,7 @@ import express from "express";
 import { prisma } from "./db";
 import { BadRequestError, UnauthorizedError } from "./errors";
 import { isIdentityAllowed } from "./auth";
+import { isNativeReturnTo, issueNativeAuthCode, nativeRedirectUrl } from "./native-auth";
 import * as crypto from "crypto";
 
 const API_HOSTNAME = process.env.API_HOSTNAME;
@@ -164,6 +165,14 @@ export const Callback = async (req: express.Request, res: express.Response) => {
     url.searchParams.append("oidcGoogle", tokenSet.id_token.toString());
     url.searchParams.append("clientId", process.env.GOOGLE_CLIENT_ID);
     return res.redirect(url.toString());
+  }
+
+  if (isNativeReturnTo(returnTo)) {
+    // Hand the session to the native app through a one-time code, and leave
+    // no session behind in the browser that ran the sign-in.
+    const code = issueNativeAuthCode({ id_token: tokenSet.id_token });
+    req.session = null;
+    return res.redirect(nativeRedirectUrl(returnTo, code));
   }
   return res.redirect(returnTo);
 };

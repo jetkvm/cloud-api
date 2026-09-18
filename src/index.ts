@@ -7,6 +7,7 @@ import 'dotenv/config';
 
 import * as Devices from "./devices";
 import * as OIDC from "./oidc";
+import * as NativeAuth from "./native-auth";
 import * as Webrtc from "./webrtc";
 import * as Releases from "./releases";
 
@@ -47,6 +48,7 @@ declare global {
       ICE_SERVERS: string;
 
       ALLOWED_IDENTITIES?: string;
+      NATIVE_APP_SCHEMES?: string;
     }
   }
 }
@@ -137,6 +139,7 @@ app.post(
 
 app.post("/oidc/google", OIDC.Google);
 app.get("/oidc/callback_o", OIDC.Callback);
+app.post("/auth/exchange", NativeAuth.Exchange);
 app.get("/oidc/callback", (req, res) => {
   /*
    * We set the session cookie in the /oidc/google route as a part of 302 redirect to the OIDC login page
