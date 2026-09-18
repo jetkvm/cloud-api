@@ -2,7 +2,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import express from "express";
 import * as jose from "jose";
 import { prisma } from "./db";
-import { NotFoundError, UnprocessableEntityError } from "./errors";
+import { NotFoundError, UnauthorizedError, UnprocessableEntityError } from "./errors";
 import { activeConnections, iceServers, inFlight } from "./webrtc-signaling";
 
 export const CreateSession = async (req: express.Request, res: express.Response) => {
@@ -102,6 +102,15 @@ export const CreateIceCredentials = async (
   req: express.Request,
   res: express.Response,
 ) => {
+  const { sub } = jose.decodeJwt(req.session?.id_token);
+  if (!sub) throw new UnauthorizedError();
+
+  const user = await prisma.user.findUnique({
+    where: { googleId: sub },
+    select: { id: true },
+  });
+  if (!user) throw new UnauthorizedError();
+
   const resp = await fetch(
     `https://rtc.live.cloudflare.com/v1/turn/keys/${process.env.CLOUDFLARE_TURN_ID}/credentials/generate`,
     {
@@ -110,7 +119,7 @@ export const CreateIceCredentials = async (
         Authorization: `Bearer ${process.env.CLOUDFLARE_TURN_TOKEN}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ ttl: 3600 }),
+      body: JSON.stringify({ ttl: 3600, customIdentifier: user.id.toString() }),
     },
   );
 
