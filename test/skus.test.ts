@@ -39,7 +39,7 @@ describe("SKU table", () => {
     }
   });
 
-  it("keeps the JetKVM recovery image with the system artifact and gives the Mini none", () => {
+  it("stores each product's recovery image next to what it is built with", () => {
     expect(artifactFor("jetkvm-v2", "recovery")).toEqual({
       prefix: "system",
       file: "update.img",
@@ -49,11 +49,14 @@ describe("SKU table", () => {
       file: "update_sd.img.zip",
     });
     for (const sku of MINI_SKUS) {
-      expect(artifactFor(sku, "recovery")).toBeUndefined();
+      expect(artifactFor(sku, "recovery")).toEqual({
+        prefix: "mini",
+        file: "jetkvm-mini-full.bin",
+      });
     }
   });
 
-  it("syncs three prefixes, each holding one over-the-air file", () => {
+  it("syncs three prefixes, each holding one over-the-air file (recovery is not synced)", () => {
     expect(OTA_PREFIXES).toEqual(["app", "system", "mini"]);
     expect(otaFileForPrefix("app")).toBe("jetkvm_app");
     expect(otaFileForPrefix("system")).toBe("system.tar");
