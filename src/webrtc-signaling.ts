@@ -6,7 +6,7 @@ import { prisma } from "./db";
 import { IncomingMessage } from "http";
 import { Socket } from "node:net";
 import { Device } from "@prisma/client";
-import { Server, ServerResponse } from "node:http";
+import { STATUS_CODES, Server, ServerResponse } from "node:http";
 import { cookieSessionMiddleware } from ".";
 import { effectiveSku, normalizeSku } from "./skus";
 
@@ -22,6 +22,23 @@ export interface DeviceConnection {
 // Maintain the shared state
 export const activeConnections: Map<string, DeviceConnection> = new Map();
 export const inFlight: Set<string> = new Set();
+
+/**
+ * Refuses an upgrade with a real HTTP response before closing the socket.
+ *
+ * Destroying the socket without a response makes the edge in front of the
+ * API report the request as a 504, so every device holding a revoked token
+ * showed up as a gateway failure on each of its 5-second retries.
+ */
+export function rejectUpgrade(socket: Socket, status: number) {
+  if (!socket.writable) {
+    return socket.destroy();
+  }
+  socket.once("finish", socket.destroy);
+  socket.end(
+    `HTTP/1.1 ${status} ${STATUS_CODES[status]}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+  );
+}
 
 function toICEServers(str: string) {
   return str.split(",").filter(url => url.startsWith("stun:"));
@@ -59,7 +76,7 @@ export function registerWebSocketRouter(
       await handleClientSocketRequest(req, socket, head);
     } else {
       console.log(`[Webrtc] Unrecognized path: ${path}`);
-      return socket.destroy();
+      return rejectUpgrade(socket, 404);
     }
   });
 }
@@ -78,7 +95,7 @@ async function handleDeviceSocketRequest(
     // Authenticate device
     const device = await authenticateDeviceRequest(req);
     if (!device) {
-      return socket.destroy();
+      return rejectUpgrade(socket, 401);
     }
 
     // Inflight means that the device has connected, a client has connected to that device via HTTP, and they're now doing the signaling dance
@@ -86,7 +103,7 @@ async function handleDeviceSocketRequest(
       console.log(
         `[Device] Device ${device.id} already has an inflight client connection.`,
       );
-      return socket.destroy();
+      return rejectUpgrade(socket, 409);
     }
 
     // Handle existing connections for this device
@@ -116,11 +133,12 @@ async function handleDeviceSocketRequest(
     });
   } catch (error) {
     console.error("Error handling device socket request:", error);
-    socket.destroy();
+    rejectUpgrade(socket, 500);
   }
 }
 
-// Authenticate the device connection
+// Authenticate the device connection. Returns null only when the token can
+// never authenticate: missing, unknown, or bound to a different device id.
 async function authenticateDeviceRequest(req: IncomingMessage) {
   const authHeader = req.headers["authorization"];
   const secretToken = authHeader?.split(" ")?.[1];
@@ -130,24 +148,22 @@ async function authenticateDeviceRequest(req: IncomingMessage) {
     return null;
   }
 
-  try {
-    const device = await prisma.device.findFirst({ where: { secretToken } });
-    if (!device) {
-      console.log("[Device] Invalid secret token provided.");
-      return null;
-    }
-
-    const id = req.headers["x-device-id"] as string;
-    if (!id || id !== device.id) {
-      console.log("[Device] Invalid device ID or ID/token mismatch.");
-      return null;
-    }
-
-    return device;
-  } catch (error) {
-    console.error("[Device] Error authenticating device:", error);
+  // A failed lookup (database down, pool exhausted) must not read as a bad
+  // token: the caller answers 500 for it, which the device treats as
+  // transient, while 401 means the token itself will never work.
+  const device = await prisma.device.findFirst({ where: { secretToken } });
+  if (!device) {
+    console.log("[Device] Invalid secret token provided.");
     return null;
   }
+
+  const id = req.headers["x-device-id"] as string;
+  if (!id || id !== device.id) {
+    console.log("[Device] Invalid device ID or ID/token mismatch.");
+    return null;
+  }
+
+  return device;
 }
 
 // Setup the device WebSocket after authentication
@@ -227,16 +243,16 @@ async function handleClientSocketRequest(
     cookieSessionMiddleware(req as any, {} as any, async () => {
       try {
         // Authenticate client and get device ID
-        const { deviceId, token } = await authenticateClientRequest(req as any);
-        if (!deviceId) {
-          return socket.destroy();
+        const auth = await authenticateClientRequest(req as any);
+        if (auth.deviceId === null) {
+          return rejectUpgrade(socket, auth.status);
         }
+        const { deviceId, token } = auth;
 
         // Check if device is connected
         if (!activeConnections.has(deviceId)) {
           console.log(`[Client] Device ${deviceId} not connected.`);
-          socket.write("HTTP/1.1 404 Not Found\r\n\r\n");
-          return socket.destroy();
+          return rejectUpgrade(socket, 404);
         }
 
         // Complete the WebSocket upgrade
@@ -245,23 +261,29 @@ async function handleClientSocketRequest(
         });
       } catch (error) {
         console.error("Error in client WebSocket setup:", error);
-        socket.destroy();
+        rejectUpgrade(socket, 500);
       }
     });
   } catch (error) {
     console.error("Error handling client socket request:", error);
-    socket.destroy();
+    rejectUpgrade(socket, 500);
   }
 }
 
+type ClientAuth =
+  | { deviceId: string; token: string }
+  | { deviceId: null; status: 401 | 404 };
+
 // Authenticate the client connection
-async function authenticateClientRequest(req: Request & { session: any }) {
+async function authenticateClientRequest(
+  req: Request & { session: any },
+): Promise<ClientAuth> {
   const session = req.session;
   const token = session?.id_token;
 
   if (!token) {
     console.log("[Client] No authentication token.");
-    return { deviceId: null };
+    return { deviceId: null, status: 401 };
   }
 
   try {
@@ -271,7 +293,7 @@ async function authenticateClientRequest(req: Request & { session: any }) {
 
     if (!deviceId) {
       console.log("[Client] No device ID provided.");
-      return { deviceId: null };
+      return { deviceId: null, status: 404 };
     }
 
     // Check if device exists and user has access
@@ -282,13 +304,13 @@ async function authenticateClientRequest(req: Request & { session: any }) {
 
     if (!device) {
       console.log("[Client] Device not found or user doesn't have access.");
-      return { deviceId: null };
+      return { deviceId: null, status: 404 };
     }
 
     return { deviceId, token };
   } catch (error) {
     console.error("[Client] Authentication error:", error);
-    return { deviceId: null };
+    return { deviceId: null, status: 401 };
   }
 }
 
