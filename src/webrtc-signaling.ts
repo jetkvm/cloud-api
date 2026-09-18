@@ -8,10 +8,19 @@ import { Socket } from "node:net";
 import { Device } from "@prisma/client";
 import { Server, ServerResponse } from "node:http";
 import { cookieSessionMiddleware } from ".";
+import { effectiveSku, normalizeSku } from "./skus";
+
+export interface DeviceConnection {
+  ws: WebSocket;
+  ip: string;
+  /** X-App-Version header, null for firmware that does not send it. */
+  version: string | null;
+  /** X-Device-SKU header after validation, null when absent or unknown. */
+  sku: string | null;
+}
 
 // Maintain the shared state
-export const activeConnections: Map<string, [WebSocket, string, string | null]> =
-  new Map(); //  [deviceWs, ip, version]
+export const activeConnections: Map<string, DeviceConnection> = new Map();
 export const inFlight: Set<string> = new Set();
 
 function toICEServers(str: string) {
@@ -86,7 +95,7 @@ async function handleDeviceSocketRequest(
         `[Device] Device ${device.id} already connected. Terminating existing connection.`,
       );
 
-      const [existingDeviceWs] = activeConnections.get(device.id)!;
+      const existingDeviceWs = activeConnections.get(device.id)!.ws;
       await new Promise(resolve => {
         console.log("[Device] Waiting for existing connection to close...");
         existingDeviceWs.on("close", () => {
@@ -148,12 +157,17 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
     (process.env.REAL_IP_HEADER && req.headers[process.env.REAL_IP_HEADER]) ||
     req.socket.remoteAddress;
 
-  const deviceVersion = req.headers["x-app-version"] as string | null;
+  const deviceVersion = (req.headers["x-app-version"] as string | undefined) || null;
+  const rawSku = req.headers["x-device-sku"];
+  const deviceSku = normalizeSku(rawSku);
+  if (rawSku && !deviceSku) {
+    console.log(`[Device] ${id} reported unknown SKU ${JSON.stringify(rawSku)}; ignoring`);
+  }
 
   // Store the connection
-  activeConnections.set(id, [deviceWs, `${ip}`, deviceVersion || null]);
+  activeConnections.set(id, { ws: deviceWs, ip: `${ip}`, version: deviceVersion, sku: deviceSku });
   console.log(
-    `[Device] New connection for device ${id}, with version ${deviceVersion || "unknown"}`,
+    `[Device] New connection for device ${id}, with version ${deviceVersion || "unknown"} and SKU ${deviceSku || "unknown"}`,
   );
 
   // Setup ping/pong for connection health checks
@@ -289,7 +303,7 @@ function setupClientWebSocket(clientWs: WebSocket, deviceId: string, token: stri
     return clientWs.close();
   }
 
-  const [deviceWs, ip, version] = deviceConn;
+  const { ws: deviceWs, ip, version, sku } = deviceConn;
 
   // If there's an active connection with this device, prevent a new one
   if (inFlight.has(deviceId)) {
@@ -307,7 +321,7 @@ function setupClientWebSocket(clientWs: WebSocket, deviceId: string, token: stri
   clientWs.send(
     JSON.stringify({
       type: "device-metadata",
-      data: { deviceVersion: version },
+      data: { deviceVersion: version, deviceSku: effectiveSku(sku) },
     }),
   );
 
