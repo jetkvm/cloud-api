@@ -66,6 +66,7 @@ export const CreateSession = async (req: express.Request, res: express.Response)
           sd,
           ip,
           iceServers,
+          OidcToken: idToken,
           OidcGoogle: idToken,
         }),
       );
