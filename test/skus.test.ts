@@ -5,8 +5,10 @@ import {
   KNOWN_SKUS,
   OTA_PREFIXES,
   artifactFor,
+  effectiveSku,
   isKnownSku,
   legacyCompatibleSkus,
+  normalizeSku,
   otaArtifacts,
   otaFileForPrefix,
   skusForPrefix,
@@ -79,5 +81,22 @@ describe("SKU table", () => {
     expect(() => artifactFor("jetkvm-mini-lte", "system")).toThrow(
       'Unknown SKU "jetkvm-mini-lte"',
     );
+  });
+});
+
+describe("device-reported SKUs", () => {
+  it("normalizes a reported SKU to a registered one or null", () => {
+    expect(normalizeSku("jetkvm-mini-ethernet")).toBe("jetkvm-mini-ethernet");
+    expect(normalizeSku("jetkvm-mini-lte")).toBeNull();
+    expect(normalizeSku(["jetkvm-v2"])).toBeNull();
+    expect(normalizeSku(undefined)).toBeNull();
+    expect(normalizeSku("")).toBeNull();
+    expect(normalizeSku("__proto__")).toBeNull();
+  });
+
+  it("treats a device without a stored SKU as the original hardware", () => {
+    expect(effectiveSku(null)).toBe(DEFAULT_SKU);
+    expect(effectiveSku(undefined)).toBe(DEFAULT_SKU);
+    expect(effectiveSku("jetkvm-mini-ethernet")).toBe("jetkvm-mini-ethernet");
   });
 });

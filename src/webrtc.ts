@@ -30,14 +30,13 @@ export const CreateSession = async (req: express.Request, res: express.Response)
     );
   }
 
-  const wsTuple = activeConnections.get(id);
-  if (!wsTuple) {
+  const deviceConn = activeConnections.get(id);
+  if (!deviceConn) {
     console.log("No socket for id", id);
     throw new NotFoundError(`No socket for id found`, "kvm_socket_not_found");
   }
 
-  // extract the websocket and ip from the tuple
-  const [ws, ip] = wsTuple;
+  const { ws, ip } = deviceConn;
 
   let timeout: NodeJS.Timeout | undefined;
 

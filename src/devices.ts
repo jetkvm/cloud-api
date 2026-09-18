@@ -10,6 +10,22 @@ import {
 import * as crypto from "crypto";
 import { authenticated } from "./auth";
 import { activeConnections } from "./webrtc-signaling";
+import { effectiveSku } from "./skus";
+
+/**
+ * Version and SKU are known only while the device holds a signaling
+ * connection; they arrive as request headers and live in memory, not in the
+ * database. Offline devices report null for both. An online device that
+ * sends no SKU header is the original hardware.
+ */
+function liveDeviceState(id: string) {
+  const conn = activeConnections.get(id);
+  return {
+    online: !!conn,
+    version: conn?.version || null,
+    sku: conn ? effectiveSku(conn.sku) : null,
+  };
+}
 
 export const List = async (req: express.Request, res: express.Response) => {
   const idToken = req.session?.id_token;
@@ -24,16 +40,10 @@ export const List = async (req: express.Request, res: express.Response) => {
     });
 
     return res.json({
-      devices: devices.map(device => {
-        const activeDevice = activeConnections.get(device.id);
-        const version = activeDevice?.[2] || null;
-
-        return {
-          ...device,
-          online: !!activeDevice,
-          version,
-        };
-      }),
+      devices: devices.map(device => ({
+        ...device,
+        ...liveDeviceState(device.id),
+      })),
     });
   } else {
     throw new BadRequestError("Token is not from Google");
@@ -55,7 +65,7 @@ export const Retrieve = async (
   });
 
   if (!device) throw new NotFoundError("Device not found");
-  return res.status(200).json({ device });
+  return res.status(200).json({ device: { ...device, ...liveDeviceState(device.id) } });
 };
 
 export const Update = async (
@@ -137,9 +147,8 @@ export const Delete = async (
   // We just removed the device, so we should close any running open socket connections
   const conn = activeConnections.get(id);
   if (conn) {
-    const [socket] = conn;
-    socket.send("Deregistered from server");
-    socket.close();
+    conn.ws.send("Deregistered from server");
+    conn.ws.close();
   }
 
   return res.status(204).send();
