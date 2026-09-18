@@ -399,10 +399,16 @@ describe("Retrieve handler", () => {
         res,
       );
 
-      expect(jsonBody(res)).toMatchObject({
+      // Exact shape: the response carries the wire fields only, never the
+      // resolver's internal bookkeeping (cache timestamps, semver ranges).
+      expect(jsonBody(res)).toEqual({
         appVersion: "3.1.0",
+        appUrl: artifactUrl("app", "3.1.0"),
+        appHash: "app-3.1.0-jetkvm-v2-hash",
         appSigUrl: `${artifactUrl("app", "3.1.0")}.sig`,
         systemVersion: "3.0.0",
+        systemUrl: artifactUrl("system", "3.0.0"),
+        systemHash: "system-3.0.0-jetkvm-v2-hash",
         systemSigUrl: `${artifactUrl("system", "3.0.0")}.sig`,
       });
     });
@@ -873,7 +879,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
       });
 
       await expect(RetrieveLatestApp(req, res)).rejects.toThrow(NotFoundError);
-      await expect(RetrieveLatestApp(req, res)).rejects.toThrow("predates SKU support");
+      await expect(RetrieveLatestApp(req, res)).rejects.toThrow("has no artifact for SKU");
     });
 
     it("redirects to the requested SKU path when the S3 version has SKU support", async () => {
@@ -955,7 +961,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
 
       await expect(RetrieveLatestApp(req, res)).rejects.toThrow(NotFoundError);
       await expect(RetrieveLatestApp(req, res)).rejects.toThrow(
-        "is not available for version",
+        "has no artifact for SKU",
       );
     });
   });
@@ -1233,7 +1239,7 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
 
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(NotFoundError);
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-        "predates SKU support",
+        "has no artifact for SKU",
       );
     });
 
@@ -1338,7 +1344,7 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
 
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(NotFoundError);
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-        "is not available for version",
+        "has no artifact for SKU",
       );
     });
   });

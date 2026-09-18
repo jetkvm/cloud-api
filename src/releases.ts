@@ -96,8 +96,6 @@ export interface ReleaseMetadata {
   version: string;
   url: string;
   hash: string;
-  _cachedAt?: number;
-  _maxSatisfying?: string;
 }
 
 interface DbRelease {
@@ -144,6 +142,15 @@ export function clearCaches() {
 
 const bucketName = process.env.R2_BUCKET;
 const baseUrl = process.env.R2_CDN_URL;
+
+/**
+ * The one error for "this version ships no artifact for this SKU", whichever
+ * path detects it: a skus/ folder without this SKU, a pre-SKU version asked
+ * for by non-default hardware, or a DB release with no compatible artifact.
+ */
+function noArtifactForSku(version: string, sku: string): NotFoundError {
+  return new NotFoundError(`Version ${version} has no artifact for SKU "${sku}"`);
+}
 
 /**
  * Checks if an object exists in S3/R2 by attempting a HeadObjectCommand.
@@ -216,7 +223,7 @@ async function resolveArtifactPath(
       return skuPath;
     }
 
-    throw new NotFoundError(`SKU "${sku}" is not available for version ${version}`);
+    throw noArtifactForSku(version, sku);
   }
 
   // SKU defaults to "jetkvm-v2" via zod schema when not provided.
@@ -228,9 +235,7 @@ async function resolveArtifactPath(
     return `${prefix}/${version}/${artifact}`;
   }
 
-  throw new NotFoundError(
-    `Version ${version} predates SKU support and cannot serve SKU "${sku}"`,
-  );
+  throw noArtifactForSku(version, sku);
 }
 
 /**
@@ -352,43 +357,34 @@ async function getLatestVersion(
     version: latestVersion,
     url,
     hash,
-    _cachedAt: Date.now(),
-    _maxSatisfying: maxSatisfying,
   };
   releaseCache.set(cacheKey, release);
   return release;
 }
 
+/** Wire shape of the /releases response. Only these fields are serialized. */
 interface Release {
   appVersion: string;
   appUrl: string;
   appHash: string;
   appSigUrl?: string;
-  appCachedAt?: number;
-  appMaxSatisfying?: string;
 
   systemVersion: string;
   systemUrl: string;
   systemHash: string;
   systemSigUrl?: string;
-  systemCachedAt?: number;
-  systemMaxSatisfying?: string;
 }
 
 function setAppRelease(release: Release, appRelease: ReleaseMetadata) {
   release.appVersion = appRelease.version;
   release.appUrl = appRelease.url;
   release.appHash = appRelease.hash;
-  release.appCachedAt = appRelease._cachedAt;
-  release.appMaxSatisfying = appRelease._maxSatisfying;
 }
 
 function setSystemRelease(release: Release, systemRelease: ReleaseMetadata) {
   release.systemVersion = systemRelease.version;
   release.systemUrl = systemRelease.url;
   release.systemHash = systemRelease.hash;
-  release.systemCachedAt = systemRelease._cachedAt;
-  release.systemMaxSatisfying = systemRelease._maxSatisfying;
 }
 
 function toRelease(
@@ -475,23 +471,16 @@ function compatibleReleaseSelect(sku: string) {
   } as const;
 }
 
-function dbReleaseToMetadata(
-  release: DbRelease,
-  sku: string,
-  maxSatisfying?: string,
-): ReleaseMetadata {
+function dbReleaseToMetadata(release: DbRelease, sku: string): ReleaseMetadata {
   const artifact = release.artifacts[0];
   if (!artifact) {
-    throw new NotFoundError(
-      `Version ${release.version} predates SKU support and cannot serve SKU "${sku}"`,
-    );
+    throw noArtifactForSku(release.version, sku);
   }
 
   return {
     version: release.version,
     url: artifact.url,
     hash: artifact.hash,
-    _maxSatisfying: maxSatisfying,
   };
 }
 
@@ -603,12 +592,10 @@ export async function Retrieve(req: Request, res: Response) {
       dbReleaseToMetadata(
         await getReleaseByRange("app", query.sku, appVersion),
         query.sku,
-        appVersion,
       ),
       dbReleaseToMetadata(
         await getReleaseByRange("system", query.sku, systemVersion),
         query.sku,
-        systemVersion,
       ),
     );
     await addStableSigUrls(responseJson);
