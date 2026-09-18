@@ -15,10 +15,12 @@ import {
   RetrieveLatestSystemRecovery,
   clearCaches,
 } from "../src/releases";
+import { otaFileForPrefix } from "../src/skus";
+
+type ReleaseType = string;
 
 const DEFAULT_SKU = "jetkvm-v2";
 const SDMMC_SKU = "jetkvm-v2-sdmmc";
-type ReleaseType = "app" | "system";
 
 // Helper to create mock Request
 function createMockRequest(query: Record<string, string | undefined> = {}): Request {
@@ -55,7 +57,7 @@ function createMockResponse(): Response & {
 }
 
 // Mock S3 responses for listing versions
-function mockS3ListVersions(prefix: "app" | "system", versions: string[]) {
+function mockS3ListVersions(prefix: ReleaseType, versions: string[]) {
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/` }).resolves({
     CommonPrefixes: versions.map(v => ({ Prefix: `${prefix}/${v}/` })),
   });
@@ -63,12 +65,12 @@ function mockS3ListVersions(prefix: "app" | "system", versions: string[]) {
 
 // Mock S3 hash file response for legacy versions (no SKU support)
 function mockS3HashFile(
-  prefix: "app" | "system",
+  prefix: ReleaseType,
   version: string,
   hash: string,
   opts?: { hasSig?: boolean },
 ) {
-  const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const fileName = otaFileForPrefix(prefix);
   const artifactPath = `${prefix}/${version}/${fileName}`;
 
   // Mock versionHasSkuSupport to return false (no SKU folders)
@@ -89,13 +91,13 @@ function mockS3HashFile(
 
 // Mock S3 for versions with SKU support
 function mockS3SkuVersion(
-  prefix: "app" | "system",
+  prefix: ReleaseType,
   version: string,
   sku: string,
   hash: string,
   opts?: { hasSig?: boolean },
 ) {
-  const fileName = prefix === "app" ? "jetkvm_app" : "system.tar";
+  const fileName = otaFileForPrefix(prefix);
   const skuPath = `${prefix}/${version}/skus/${sku}/${fileName}`;
 
   // Mock versionHasSkuSupport to return true (has SKU folders)
@@ -119,7 +121,7 @@ function mockS3SkuVersion(
 
 // Mock S3 for legacy version with file content (for redirect endpoints with hash verification)
 function mockS3LegacyVersionWithContent(
-  prefix: "app" | "system",
+  prefix: ReleaseType,
   version: string,
   fileName: string,
   content: string,
@@ -143,7 +145,7 @@ function mockS3LegacyVersionWithContent(
 
 // Mock S3 for SKU version with file content (for redirect endpoints with hash verification)
 function mockS3SkuVersionWithContent(
-  prefix: "app" | "system",
+  prefix: ReleaseType,
   version: string,
   sku: string,
   fileName: string,
@@ -172,7 +174,7 @@ function mockS3SkuVersionWithContent(
 }
 
 function artifactFileName(type: ReleaseType) {
-  return type === "app" ? "jetkvm_app" : "system.tar";
+  return otaFileForPrefix(type);
 }
 
 function artifactPath(type: ReleaseType, version: string, sku = DEFAULT_SKU) {
@@ -260,6 +262,26 @@ describe("Retrieve handler", () => {
 
       // Empty string is falsy, so it should throw
       await expect(Retrieve(req, res)).rejects.toThrow(BadRequestError);
+    });
+  });
+
+  describe("SKU validation", () => {
+    it("rejects a SKU that is not registered before touching S3 or the DB", async () => {
+      const res = createMockResponse();
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "x", sku: "jetkvm-v3" }), res),
+      ).rejects.toThrow(BadRequestError);
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "x", sku: "jetkvm-v3" }), res),
+      ).rejects.toThrow('Unknown SKU "jetkvm-v3"');
+      expect(s3Mock.calls().length).toBe(0);
+    });
+
+    it("rejects an unregistered SKU on the app redirect", async () => {
+      const res = createMockResponse();
+      await expect(RetrieveLatestApp(createMockRequest({ sku: "jetkvm-v3" }), res)).rejects.toThrow(
+        'Unknown SKU "jetkvm-v3"',
+      );
     });
   });
 
@@ -619,7 +641,7 @@ describe("Retrieve handler", () => {
       const req = createMockRequest({
         deviceId: "device-sku-sig",
         prerelease: "true",
-        sku: "jetkvm-2",
+        sku: SDMMC_SKU,
         appVersion: "^8.0.0",
         systemVersion: "^8.0.0",
       });
@@ -627,18 +649,18 @@ describe("Retrieve handler", () => {
 
       mockS3ListVersions("app", ["8.0.0"]);
       mockS3ListVersions("system", ["8.0.0"]);
-      mockS3SkuVersion("app", "8.0.0", "jetkvm-2", "sku-sig-app-hash", { hasSig: true });
-      mockS3SkuVersion("system", "8.0.0", "jetkvm-2", "sku-sig-system-hash", {
+      mockS3SkuVersion("app", "8.0.0", SDMMC_SKU, "sku-sig-app-hash", { hasSig: true });
+      mockS3SkuVersion("system", "8.0.0", SDMMC_SKU, "sku-sig-system-hash", {
         hasSig: true,
       });
 
       await Retrieve(req, res);
 
       expect(res._json.appSigUrl).toBe(
-        "https://cdn.test.com/app/8.0.0/skus/jetkvm-2/jetkvm_app.sig",
+        "https://cdn.test.com/app/8.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app.sig",
       );
       expect(res._json.systemSigUrl).toBe(
-        "https://cdn.test.com/system/8.0.0/skus/jetkvm-2/system.tar.sig",
+        "https://cdn.test.com/system/8.0.0/skus/jetkvm-v2-sdmmc/system.tar.sig",
       );
     });
   });
@@ -866,7 +888,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
     });
 
     it("should throw NotFoundError when non-default SKU requested on legacy version", async () => {
-      const req = createMockRequest({ sku: "jetkvm-2" });
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
@@ -883,7 +905,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
     });
 
     it("redirects to the requested SKU path when the S3 version has SKU support", async () => {
-      const req = createMockRequest({ sku: "jetkvm-2" });
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
@@ -897,7 +919,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
       mockS3SkuVersionWithContent(
         "app",
         "2.0.0",
-        "jetkvm-2",
+        SDMMC_SKU,
         "jetkvm_app",
         content,
         hash,
@@ -907,7 +929,7 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
 
       expect(res.redirect).toHaveBeenCalledWith(
         302,
-        "https://cdn.test.com/app/2.0.0/skus/jetkvm-2/jetkvm_app",
+        "https://cdn.test.com/app/2.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app",
       );
     });
 
@@ -941,19 +963,19 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
     });
 
     it("should throw NotFoundError when requested SKU not available on version with SKU support", async () => {
-      const req = createMockRequest({ sku: "jetkvm-3" });
+      const req = createMockRequest({ sku: SDMMC_SKU });
       const res = createMockResponse();
 
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/" }).resolves({
         CommonPrefixes: [{ Prefix: "app/2.0.0/" }],
       });
 
-      // Version has SKU support (jetkvm-v2 exists) but jetkvm-3 doesn't
+      // Version has SKU support (jetkvm-v2 exists) but the SDMMC SKU doesn't
       s3Mock.on(ListObjectsV2Command, { Prefix: "app/2.0.0/skus/" }).resolves({
         Contents: [{ Key: "app/2.0.0/skus/jetkvm-v2/jetkvm_app" }],
       });
       s3Mock
-        .on(HeadObjectCommand, { Key: "app/2.0.0/skus/jetkvm-3/jetkvm_app" })
+        .on(HeadObjectCommand, { Key: "app/2.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app" })
         .rejects({
           name: "NoSuchKey",
           $metadata: { httpStatusCode: 404 },
@@ -1031,18 +1053,18 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
       mockS3SkuVersionWithContent(
         "app",
         "2.0.0",
-        "jetkvm-2",
+        SDMMC_SKU,
         "jetkvm_app",
         content,
         hash,
       );
 
-      const req2 = createMockRequest({ sku: "jetkvm-2" });
+      const req2 = createMockRequest({ sku: SDMMC_SKU });
       const res2 = createMockResponse();
 
       await RetrieveLatestApp(req2, res2);
       expect(res2._redirectUrl).toBe(
-        "https://cdn.test.com/app/2.0.0/skus/jetkvm-2/jetkvm_app",
+        "https://cdn.test.com/app/2.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app",
       );
     });
   });
@@ -1287,7 +1309,7 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
         BadRequestError,
       );
       await expect(RetrieveLatestSystemRecovery(req, res)).rejects.toThrow(
-        'Unsupported SKU "jetkvm-future"',
+        'Unknown SKU "jetkvm-future"',
       );
     });
 

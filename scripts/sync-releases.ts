@@ -18,13 +18,12 @@ import { PrismaClient } from "@prisma/client";
 import semver from "semver";
 
 import { objectKeyFromArtifactUrl, streamToString } from "../src/helpers";
+import { OTA_PREFIXES, legacyCompatibleSkus, otaFileForPrefix, skusForPrefix } from "../src/skus";
+
+/** An R2 prefix, which is also the Release.type column value. */
+type ReleaseType = string;
 
 const OTA_ROOT_KEY_FPR = "AF5A36A993D828FEFE7C18C2D1B9856C26A79E95";
-
-type ReleaseType = "app" | "system";
-
-const DEFAULT_SKU = "jetkvm-v2";
-const KNOWN_SKUS = ["jetkvm-v2", "jetkvm-v2-sdmmc"];
 
 interface SyncClients {
   prisma: PrismaClient;
@@ -41,16 +40,6 @@ interface ReleaseArtifactInput {
   url: string;
   hash: string;
   compatibleSkus: string[];
-}
-
-function artifactName(type: ReleaseType): string {
-  return type === "app" ? "jetkvm_app" : "system.tar";
-}
-
-// Pre-SKU artifacts (no skus/ folder) are only safe on the original jetkvm-v2.
-// Other SKUs require an explicit skus/<sku>/ upload to opt in.
-function legacyCompatibleSkus(): string[] {
-  return [DEFAULT_SKU];
 }
 
 const DEFAULT_ROLLOUT_PERCENTAGE = 10;
@@ -503,10 +492,18 @@ export async function collectReleaseArtifacts(
   type: ReleaseType,
   version: string,
 ): Promise<ReleaseArtifactInput[]> {
-  const skus = config.skus ?? KNOWN_SKUS;
-  const artifactFileName = artifactName(type);
+  const skus = config.skus ?? skusForPrefix(type);
+  const artifactFileName = otaFileForPrefix(type);
 
   if (!(await versionHasSkuSupport(clients.s3Client, config.bucketName, type, version))) {
+    // Pre-SKU artifacts (no skus/ folder) are only safe on the SKUs that
+    // predate the layout. A type with no legacy form treats a version
+    // without skus/ as an upload mistake, not a release.
+    const compatibleSkus = legacyCompatibleSkus(type);
+    if (compatibleSkus.length === 0) {
+      return [];
+    }
+
     const artifactPath = `${type}/${version}/${artifactFileName}`;
     const hash = await readHash(clients.s3Client, config.bucketName, artifactPath);
     if (!hash) {
@@ -517,7 +514,7 @@ export async function collectReleaseArtifacts(
       {
         url: `${config.baseUrl}/${artifactPath}`,
         hash,
-        compatibleSkus: legacyCompatibleSkus(),
+        compatibleSkus,
       },
     ];
   }
@@ -639,7 +636,7 @@ export async function syncReleases(
   };
   let abortedAt: { type: ReleaseType; version: string } | null = null;
 
-  outer: for (const type of ["app", "system"] as const) {
+  outer: for (const type of OTA_PREFIXES) {
     const versions = await listStableVersions(clients.s3Client, config.bucketName, type);
 
     for (const version of versions) {
