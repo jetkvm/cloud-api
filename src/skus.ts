@@ -67,6 +67,24 @@ export function isKnownSku(sku: string): boolean {
   return Object.prototype.hasOwnProperty.call(SKUS, sku);
 }
 
+/**
+ * Coerces a SKU reported by a device (header or body value) to a registered
+ * SKU, or null when absent or unknown. Unknown values are dropped rather than
+ * stored so the cloud never advertises hardware it has no definition for.
+ */
+export function normalizeSku(value: unknown): string | null {
+  return typeof value === "string" && isKnownSku(value) ? value : null;
+}
+
+/**
+ * SKU to assume for a connected device that did not report one. Only the
+ * original JetKVM hardware predates SKU reporting, so it is the default
+ * everywhere, mirroring the /releases query default.
+ */
+export function effectiveSku(sku: string | null | undefined): string {
+  return sku ?? DEFAULT_SKU;
+}
+
 export interface Artifact {
   prefix: string;
   file: string;
