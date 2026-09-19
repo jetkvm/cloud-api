@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "./db";
 import { BadRequestError, ConflictError, InternalServerError, NotFoundError } from "./errors";
-import type { ReleaseSyncRunner } from "./release-sync";
+import { releaseExists, type ReleaseSyncRunner } from "./release-sync";
 import semver from "semver";
 
 import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
@@ -734,8 +734,10 @@ const syncBodySchema = z
 /**
  * POST /releases/sync: register every stable R2 version missing from the DB
  * and answer with the per-outcome counts. With `{ type, version }` in the
- * body, that one version skips the settle window: the caller vouches its
- * last object is written. Every other version keeps it.
+ * body, that one version skips the settle window (the caller vouches its
+ * last object is written) and the answer adds `registered`: whether a row
+ * for it exists once the run is over, whichever run created it. The counts
+ * alone cannot say that, since they cover every version scanned.
  */
 export function Sync(runner: ReleaseSyncRunner) {
   return async (req: Request, res: Response) => {
@@ -744,6 +746,10 @@ export function Sync(runner: ReleaseSyncRunner) {
     if (stats === "busy") {
       throw new ConflictError("A release sync is already in progress");
     }
-    return res.json(stats);
+    if (!settled) {
+      return res.json(stats);
+    }
+    const registered = await releaseExists(prisma, settled.type, settled.version);
+    return res.json({ ...stats, registered });
   };
 }

@@ -546,7 +546,9 @@ describe("Sync handler", () => {
 
     await Sync(newRunner())(request({ type: "app", version: FRESH_VERSION }), res);
 
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 1, uploading: 1 }));
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ created: 1, uploading: 1, registered: true }),
+    );
     expect(
       await testPrisma.release.findUnique({
         where: { version_type: { version: FRESH_VERSION, type: "app" } },
@@ -566,6 +568,16 @@ describe("Sync handler", () => {
     await Sync(newRunner())(request(), res);
 
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 0, uploading: 2 }));
+    expect(res.json).not.toHaveBeenCalledWith(expect.objectContaining({ registered: expect.anything() }));
+  });
+
+  it("answers registered: false when the named version is not on R2", async () => {
+    mockS3ListVersions("app", []);
+    const res = response();
+
+    await Sync(newRunner())(request({ type: "app", version: "9.9.99" }), res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 0, registered: false }));
   });
 
   it.each([

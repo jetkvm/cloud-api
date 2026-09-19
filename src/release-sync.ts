@@ -220,7 +220,7 @@ async function listSyncedVersions(prisma: PrismaClient, type: ReleaseType): Prom
   return new Set(releases.map(release => release.version));
 }
 
-async function releaseExists(
+export async function releaseExists(
   prisma: PrismaClient,
   type: ReleaseType,
   version: string,
