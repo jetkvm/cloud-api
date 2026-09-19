@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { prisma } from "./db";
-import { BadRequestError, InternalServerError, NotFoundError } from "./errors";
+import { BadRequestError, ConflictError, InternalServerError, NotFoundError } from "./errors";
+import type { ReleaseSyncRunner } from "./release-sync";
 import semver from "semver";
 
 import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
@@ -710,3 +711,19 @@ function latestArtifactRedirect(kind: OtaKind) {
 }
 
 export const RetrieveLatestApp = latestArtifactRedirect("app");
+
+/**
+ * POST /releases/sync: register every stable R2 version missing from the DB
+ * and answer with the per-outcome counts. Made for the upload script's last
+ * step, so the settle window is off: the caller vouches its last object is
+ * written.
+ */
+export function Sync(runner: ReleaseSyncRunner) {
+  return async (req: Request, res: Response) => {
+    const stats = await runner({ uploadSettleMs: 0 });
+    if (stats === "busy") {
+      throw new ConflictError("A release sync is already in progress");
+    }
+    return res.json(stats);
+  };
+}
