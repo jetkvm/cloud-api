@@ -10,6 +10,10 @@ export const s3Client = new S3Client({
   region: "auto",
 });
 
+/** Bucket that holds release artifacts, and the public CDN origin they are served from. */
+export const bucketName = process.env.R2_BUCKET!;
+export const baseUrl = process.env.R2_CDN_URL!;
+
 /** HeadObject throws NotFound, but some S3-compatible stores (like R2) may throw NoSuchKey. */
 export function isS3NotFound(error: any): boolean {
   return (

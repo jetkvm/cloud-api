@@ -5,7 +5,7 @@ import semver from "semver";
 
 import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { LRUCache } from "lru-cache";
-import { s3Client, s3ObjectExists, versionHasSkuSupport } from "./s3";
+import { baseUrl, bucketName, s3Client, s3ObjectExists, versionHasSkuSupport } from "./s3";
 
 import {
   getDeviceRolloutBucket,
@@ -120,9 +120,6 @@ export function clearCaches() {
   redirectCache.clear();
   sigUrlCache.clear();
 }
-
-const bucketName = process.env.R2_BUCKET;
-const baseUrl = process.env.R2_CDN_URL;
 
 /**
  * The one error for "this version ships no artifact for this SKU", whichever

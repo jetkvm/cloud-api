@@ -1,4 +1,9 @@
-import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
+import {
+  GetObjectCommand,
+  ListObjectsV2Command,
+  S3Client,
+  paginateListObjectsV2,
+} from "@aws-sdk/client-s3";
 import { Prisma, PrismaClient } from "@prisma/client";
 import semver from "semver";
 
@@ -18,6 +23,14 @@ export interface SyncConfig {
   bucketName: string;
   baseUrl: string;
   skus?: string[];
+  /**
+   * Defer a version whose newest object changed within this many ms: the
+   * upload script writes several files per SKU, and sync never rewrites a
+   * row, so registering mid-upload would freeze a partial SKU set or a stale
+   * hash. Unset or 0 disables the check (an operator at a terminal can judge
+   * the artifact list for themselves).
+   */
+  uploadSettleMs?: number;
 }
 
 export interface ReleaseArtifactInput {
@@ -36,12 +49,7 @@ export type ReleaseOutcome =
   | "skipped"
   | "aborted";
 
-/**
- * A version whose newest object changed more recently than this is still being
- * uploaded (the upload script writes several files per SKU). Registering it
- * now would freeze a partial SKU set or a stale hash, since sync never rewrites
- * a row. Shorter than the schedule interval, so it costs at most one tick.
- */
+/** Settle window for unattended runs; shorter than the interval, so it costs at most one tick. */
 export const UPLOAD_SETTLE_MS = 10 * 60 * 1000;
 
 export type ReleaseDecision =
@@ -136,20 +144,25 @@ export async function collectReleaseArtifacts(
     ];
   }
 
+  // SKUs are probed concurrently; folding afterwards in `skus` order keeps
+  // the primary artifact (artifacts[0]) and compatibleSkus order stable.
+  const found = await Promise.all(
+    skus.map(async sku => {
+      const artifactPath = `${type}/${version}/skus/${sku}/${artifactFileName}`;
+      if (!(await s3ObjectExists(clients.s3Client, config.bucketName, artifactPath))) {
+        return undefined;
+      }
+      const hash = await readHash(clients.s3Client, config.bucketName, artifactPath);
+      return hash ? { sku, url: `${config.baseUrl}/${artifactPath}`, hash } : undefined;
+    }),
+  );
+
   const artifactsByUrl = new Map<string, ReleaseArtifactInput>();
-  for (const sku of skus) {
-    const artifactPath = `${type}/${version}/skus/${sku}/${artifactFileName}`;
-    if (!(await s3ObjectExists(clients.s3Client, config.bucketName, artifactPath))) {
-      continue;
+  for (const artifact of found) {
+    if (artifact) {
+      addArtifact(artifactsByUrl, artifact.url, artifact.hash, artifact.sku);
     }
-
-    const hash = await readHash(clients.s3Client, config.bucketName, artifactPath);
-    if (!hash) {
-      continue;
-    }
-    addArtifact(artifactsByUrl, `${config.baseUrl}/${artifactPath}`, hash, sku);
   }
-
   return Array.from(artifactsByUrl.values());
 }
 
@@ -183,22 +196,16 @@ async function newestUploadTime(
   version: string,
 ): Promise<Date | undefined> {
   let newest: Date | undefined;
-  let continuationToken: string | undefined;
-  do {
-    const response = await s3Client.send(
-      new ListObjectsV2Command({
-        Bucket: bucketName,
-        Prefix: `${type}/${version}/`,
-        ContinuationToken: continuationToken,
-      }),
-    );
-    for (const object of response.Contents ?? []) {
+  for await (const page of paginateListObjectsV2(
+    { client: s3Client },
+    { Bucket: bucketName, Prefix: `${type}/${version}/` },
+  )) {
+    for (const object of page.Contents ?? []) {
       if (object.LastModified && (!newest || object.LastModified > newest)) {
         newest = object.LastModified;
       }
     }
-    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-  } while (continuationToken);
+  }
   return newest;
 }
 
@@ -223,12 +230,14 @@ async function createRelease(
   type: ReleaseType,
   version: string,
 ): Promise<ReleaseOutcome> {
-  const newest = await newestUploadTime(clients.s3Client, config.bucketName, type, version);
-  if (newest && Date.now() - newest.getTime() < UPLOAD_SETTLE_MS) {
-    console.log(
-      `[sync-releases] ${type} ${version}: upload still settling (last object ${newest.toISOString()}), retrying next run`,
-    );
-    return "uploading";
+  if (config.uploadSettleMs) {
+    const newest = await newestUploadTime(clients.s3Client, config.bucketName, type, version);
+    if (newest && Date.now() - newest.getTime() < config.uploadSettleMs) {
+      console.log(
+        `[sync-releases] ${type} ${version}: upload still settling (last object ${newest.toISOString()}), retrying next run`,
+      );
+      return "uploading";
+    }
   }
 
   const artifacts = await collectReleaseArtifacts(clients, config, type, version);
@@ -360,7 +369,11 @@ export function scheduleReleaseSync(
     }
     running = true;
     try {
-      await syncReleases(clients, config, createAtDefaultRollout);
+      await syncReleases(
+        clients,
+        { uploadSettleMs: UPLOAD_SETTLE_MS, ...config },
+        createAtDefaultRollout,
+      );
     } catch (error) {
       console.error("[sync-releases] scheduled run failed", error);
     } finally {

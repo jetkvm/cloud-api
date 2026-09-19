@@ -76,13 +76,12 @@ beforeEach(() => {
   s3Mock
     .on(HeadObjectCommand)
     .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
-  // Listings a test does not mock explicitly (the upload settle check) see an
-  // empty folder. More specific .on(..., { Prefix }) stubs registered later win.
+  // Listings a test does not stub (other prefixes, the upload settle check) see
+  // an empty folder. More specific .on(..., { Prefix }) stubs registered later win.
   s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] });
 });
 
-describe("sync-releases script", () => {
-
+describe("syncReleases", () => {
   it("marks legacy app artifacts compatible with the default SKU only", async () => {
     mockS3HashFile("app", "9.9.1", "legacy-app-hash");
 
@@ -197,7 +196,6 @@ describe("sync-releases script", () => {
 
     mockS3ListVersions("app", [version, "10.0.0-beta.1"]);
     mockS3ListVersions("system", [version]);
-    mockS3ListVersions("mini", []);
     mockS3HashFile("app", version, "app-hash");
     mockS3SkuVersion("system", version, DEFAULT_SKU, "system-hash-v2");
     mockS3SkuVersion("system", version, SDMMC_SKU, "system-hash-sdmmc");
@@ -254,8 +252,6 @@ describe("sync-releases script", () => {
     const fresh = "9.9.10";
     const settled = "9.9.11";
     mockS3ListVersions("app", [fresh, settled]);
-    mockS3ListVersions("system", []);
-    mockS3ListVersions("mini", []);
     mockS3HashFile("app", fresh, "fresh-hash");
     mockS3HashFile("app", settled, "settled-hash");
     mockS3UploadedAt("app", fresh, new Date(Date.now() - 60 * 1000));
@@ -263,7 +259,7 @@ describe("sync-releases script", () => {
 
     const stats = await syncReleases(
       { prisma: testPrisma, s3Client: syncS3Client },
-      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL, uploadSettleMs: UPLOAD_SETTLE_MS },
       createAtDefaultRollout,
     );
 
@@ -283,7 +279,6 @@ describe("sync-releases script", () => {
   it("honours the decider's rollout, skip and abort answers", async () => {
     mockS3ListVersions("app", ["9.9.5", "9.9.6", "9.9.7"]);
     mockS3ListVersions("system", ["9.9.5"]);
-    mockS3ListVersions("mini", []);
     for (const version of ["9.9.5", "9.9.6", "9.9.7"]) {
       mockS3HashFile("app", version, `app-hash-${version}`);
     }
@@ -325,8 +320,6 @@ describe("sync-releases script", () => {
   it("treats a release created by another instance mid-run as already synced", async () => {
     const version = "9.9.8";
     mockS3ListVersions("app", [version]);
-    mockS3ListVersions("system", []);
-    mockS3ListVersions("mini", []);
     mockS3HashFile("app", version, "app-hash");
 
     // Simulate the race: the known-versions query sees nothing, but by the
@@ -384,8 +377,6 @@ describe("scheduleReleaseSync", () => {
       .on(ListObjectsV2Command, { Prefix: "app/" })
       .rejectsOnce(new Error("R2 unavailable"))
       .resolves({ CommonPrefixes: [{ Prefix: `app/${version}/` }] });
-    mockS3ListVersions("system", []);
-    mockS3ListVersions("mini", []);
     mockS3HashFile("app", version, "app-hash");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -421,8 +412,6 @@ describe("scheduleReleaseSync", () => {
       .on(ListObjectsV2Command, { Prefix: "app/" })
       .callsFakeOnce(() => firstListing)
       .resolves({ CommonPrefixes: [] });
-    mockS3ListVersions("system", []);
-    mockS3ListVersions("mini", []);
     const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     stop = scheduleReleaseSync(

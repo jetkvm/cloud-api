@@ -13,7 +13,7 @@ import { PrismaClient } from "@prisma/client";
 import semver from "semver";
 
 import { objectKeyFromArtifactUrl } from "../src/helpers";
-import { s3Client, s3ObjectExists } from "../src/s3";
+import { baseUrl, bucketName, s3Client, s3ObjectExists } from "../src/s3";
 import {
   DEFAULT_ROLLOUT_PERCENTAGE,
   createAtDefaultRollout,
@@ -388,7 +388,7 @@ function describeDbTarget(): string {
 
 async function main(): Promise<void> {
   console.log(
-    `[sync-releases] env=${process.env.NODE_ENV ?? "(unset)"} db=${describeDbTarget()} bucket=${process.env.R2_BUCKET ?? "(unset)"}`,
+    `[sync-releases] env=${process.env.NODE_ENV ?? "(unset)"} db=${describeDbTarget()} bucket=${bucketName ?? "(unset)"}`,
   );
 
   const isProduction = process.env.NODE_ENV === "production";
@@ -400,10 +400,7 @@ async function main(): Promise<void> {
 
   const prisma = new PrismaClient();
   const clients: SyncClients = { prisma, s3Client };
-  const config: SyncConfig = {
-    bucketName: process.env.R2_BUCKET!,
-    baseUrl: process.env.R2_CDN_URL!,
-  };
+  const config: SyncConfig = { bucketName, baseUrl };
 
   try {
     await syncReleases(
