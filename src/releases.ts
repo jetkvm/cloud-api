@@ -3,13 +3,9 @@ import { prisma } from "./db";
 import { BadRequestError, InternalServerError, NotFoundError } from "./errors";
 import semver from "semver";
 
-import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { LRUCache } from "lru-cache";
+import { s3Client, s3ObjectExists, versionHasSkuSupport } from "./s3";
 
 import {
   getDeviceRolloutBucket,
@@ -101,15 +97,6 @@ interface DbRelease {
   }[];
 }
 
-const s3Client = new S3Client({
-  endpoint: process.env.R2_ENDPOINT!,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-  region: "auto",
-});
-
 const releaseCache = new LRUCache<string, ReleaseMetadata>({
   max: 1000,
   ttl: 5 * 60 * 1000, // 5 minutes
@@ -146,41 +133,7 @@ function noArtifactForSku(version: string, sku: string): NotFoundError {
   return new NotFoundError(`Version ${version} has no artifact for SKU "${sku}"`);
 }
 
-/**
- * Checks if an object exists in S3/R2 by attempting a HeadObjectCommand.
- * Returns true if the object exists, false otherwise.
- */
-async function s3ObjectExists(key: string): Promise<boolean> {
-  try {
-    await s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
-    return true;
-  } catch (error: any) {
-    // HeadObjectCommand throws NotFound, but some S3-compatible stores (like R2) may throw NoSuchKey
-    if (
-      error.name === "NotFound" ||
-      error.name === "NoSuchKey" ||
-      error.$metadata?.httpStatusCode === 404
-    ) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
- * Checks if a version was uploaded with SKU folder structure.
- * Returns true if any skus/ subfolder exists for this version.
- */
-async function versionHasSkuSupport(prefix: string, version: string): Promise<boolean> {
-  const response = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${prefix}/${version}/skus/`,
-      MaxKeys: 1,
-    }),
-  );
-  return (response.Contents?.length ?? 0) > 0;
-}
+const objectExists = (key: string) => s3ObjectExists(s3Client, bucketName, key);
 
 /**
  * Resolves the artifact path for a given version and SKU.
@@ -205,10 +158,10 @@ async function resolveArtifactPath(
   sku: string,
   file: string,
 ): Promise<string> {
-  if (await versionHasSkuSupport(prefix, version)) {
+  if (await versionHasSkuSupport(s3Client, bucketName, prefix, version)) {
     const skuPath = `${prefix}/${version}/skus/${sku}/${file}`;
 
-    if (await s3ObjectExists(skuPath)) {
+    if (await objectExists(skuPath)) {
       return skuPath;
     }
 
@@ -243,7 +196,7 @@ async function resolveSigUrl(
   try {
     const path = await resolveArtifactPath(artifact.prefix, version, sku, artifact.file);
     const sigKey = `${path}.sig`;
-    if (await s3ObjectExists(sigKey)) {
+    if (await objectExists(sigKey)) {
       const url = `${baseUrl}/${sigKey}`;
       sigUrlCache.set(cacheKey, url);
       return url;
@@ -389,7 +342,7 @@ async function resolveSigUrlFromArtifactUrl(
   const sigUrl = `${artifactUrl}.sig`;
   try {
     const sigKey = `${objectKeyFromArtifactUrl(artifactUrl)}.sig`;
-    if (await s3ObjectExists(sigKey)) {
+    if (await objectExists(sigKey)) {
       sigUrlCache.set(cacheKey, sigUrl);
       return sigUrl;
     }
@@ -693,7 +646,7 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       recovery.file,
     );
 
-    if (!(await s3ObjectExists(artifactPath))) {
+    if (!(await objectExists(artifactPath))) {
       throw new NotFoundError(`Recovery image not found for version ${latestVersion}`);
     }
 
@@ -750,7 +703,7 @@ function latestArtifactRedirect(kind: OtaKind) {
         artifact.file,
       );
 
-      if (!(await s3ObjectExists(artifactPath))) {
+      if (!(await objectExists(artifactPath))) {
         throw new NotFoundError(`${prefix} artifact not found for version ${latestVersion}`);
       }
 

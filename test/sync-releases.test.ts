@@ -4,12 +4,19 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { describe, expect, beforeEach, it } from "vitest";
+import { PrismaClient } from "@prisma/client";
+import { afterEach, describe, expect, beforeEach, it, vi } from "vitest";
 
-import { collectReleaseArtifacts, syncReleases } from "../scripts/sync-releases";
+import {
+  collectReleaseArtifacts,
+  createAtDefaultRollout,
+  scheduleReleaseSync,
+  syncReleases,
+  type ReleaseDecider,
+  type ReleaseType,
+} from "../src/release-sync";
 import { otaFileForPrefix } from "../src/skus";
 
-type ReleaseType = string;
 import { createAsyncIterable, s3Mock, testPrisma } from "./setup";
 
 const DEFAULT_SKU = "jetkvm-v2";
@@ -56,13 +63,14 @@ function mockS3SkuVersion(
   });
 }
 
+beforeEach(() => {
+  s3Mock.reset();
+  s3Mock
+    .on(HeadObjectCommand)
+    .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+});
+
 describe("sync-releases script", () => {
-  beforeEach(() => {
-    s3Mock.reset();
-    s3Mock
-      .on(HeadObjectCommand)
-      .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
-  });
 
   it("marks legacy app artifacts compatible with the default SKU only", async () => {
     mockS3HashFile("app", "9.9.1", "legacy-app-hash");
@@ -183,10 +191,19 @@ describe("sync-releases script", () => {
     mockS3SkuVersion("system", version, DEFAULT_SKU, "system-hash-v2");
     mockS3SkuVersion("system", version, SDMMC_SKU, "system-hash-sdmmc");
 
-    await syncReleases(
+    const stats = await syncReleases(
       { prisma: testPrisma, s3Client: syncS3Client },
       { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      createAtDefaultRollout,
     );
+
+    expect(stats).toEqual({
+      created: 1,
+      "already-synced": 1,
+      "no-artifacts": 0,
+      skipped: 0,
+      aborted: 0,
+    });
 
     const appRelease = await testPrisma.release.findUniqueOrThrow({
       where: { version_type: { version, type: "app" } },
@@ -219,5 +236,177 @@ describe("sync-releases script", () => {
 
     // Prereleases are filtered out by listStableVersions.
     expect(prerelease).toBeNull();
+  });
+
+  it("honours the decider's rollout, skip and abort answers", async () => {
+    mockS3ListVersions("app", ["9.9.5", "9.9.6", "9.9.7"]);
+    mockS3ListVersions("system", ["9.9.5"]);
+    mockS3ListVersions("mini", []);
+    for (const version of ["9.9.5", "9.9.6", "9.9.7"]) {
+      mockS3HashFile("app", version, `app-hash-${version}`);
+    }
+    mockS3HashFile("system", "9.9.5", "system-hash");
+
+    const answers: Record<string, Awaited<ReturnType<ReleaseDecider>>> = {
+      "app 9.9.5": { kind: "create", rolloutPercentage: 42 },
+      "app 9.9.6": { kind: "skip" },
+      "app 9.9.7": { kind: "abort" },
+    };
+    const decide: ReleaseDecider = async (type, version) => answers[`${type} ${version}`];
+
+    const stats = await syncReleases(
+      { prisma: testPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      decide,
+    );
+
+    expect(stats).toMatchObject({ created: 1, skipped: 1, aborted: 1 });
+
+    const created = await testPrisma.release.findUniqueOrThrow({
+      where: { version_type: { version: "9.9.5", type: "app" } },
+    });
+    expect(created.rolloutPercentage).toBe(42);
+
+    const notCreated = await testPrisma.release.findMany({
+      where: {
+        OR: [
+          { version: "9.9.6", type: "app" },
+          { version: "9.9.7", type: "app" },
+          // Abort stops the whole run, so system is never reached.
+          { version: "9.9.5", type: "system" },
+        ],
+      },
+    });
+    expect(notCreated).toEqual([]);
+  });
+
+  it("treats a release created by another instance mid-run as already synced", async () => {
+    const version = "9.9.8";
+    mockS3ListVersions("app", [version]);
+    mockS3ListVersions("system", []);
+    mockS3ListVersions("mini", []);
+    mockS3HashFile("app", version, "app-hash");
+
+    // Simulate the race: the known-versions query sees nothing, but by the
+    // time this instance inserts, the row is there (written here up front so
+    // the real unique constraint fires on create).
+    await testPrisma.release.create({
+      data: {
+        version,
+        type: "app",
+        rolloutPercentage: 10,
+        url: "https://cdn.test.com/other-instance",
+        hash: "other-instance-hash",
+      },
+    });
+    const racingPrisma = {
+      release: {
+        findMany: async () => [],
+        create: (args: unknown) => testPrisma.release.create(args as any),
+      },
+    } as unknown as PrismaClient;
+
+    const stats = await syncReleases(
+      { prisma: racingPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      createAtDefaultRollout,
+    );
+
+    expect(stats).toMatchObject({ created: 0, "already-synced": 1 });
+    const release = await testPrisma.release.findUniqueOrThrow({
+      where: { version_type: { version, type: "app" } },
+    });
+    expect(release.url).toBe("https://cdn.test.com/other-instance");
+  });
+});
+
+describe("scheduleReleaseSync", () => {
+  const INTERVAL_MS = 1000;
+  let stop: (() => void) | undefined;
+
+  beforeEach(() => {
+    // Only the scheduler's own timer is faked; DB and S3 mock I/O stay real.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  });
+
+  afterEach(() => {
+    stop?.();
+    stop = undefined;
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("runs at start, keeps the schedule after a failed run and creates on the next tick", async () => {
+    const version = "9.9.9";
+    s3Mock
+      .on(ListObjectsV2Command, { Prefix: "app/" })
+      .rejectsOnce(new Error("R2 unavailable"))
+      .resolves({ CommonPrefixes: [{ Prefix: `app/${version}/` }] });
+    mockS3ListVersions("system", []);
+    mockS3ListVersions("mini", []);
+    mockS3HashFile("app", version, "app-hash");
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    stop = scheduleReleaseSync(
+      { prisma: testPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      INTERVAL_MS,
+    );
+
+    await vi.waitFor(() => expect(errorLog).toHaveBeenCalledOnce());
+    expect(
+      await testPrisma.release.findUnique({
+        where: { version_type: { version, type: "app" } },
+      }),
+    ).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+
+    await vi.waitFor(async () => {
+      const release = await testPrisma.release.findUnique({
+        where: { version_type: { version, type: "app" } },
+      });
+      expect(release?.rolloutPercentage).toBe(10);
+    });
+  });
+
+  it("skips a tick while the previous run is still in progress", async () => {
+    let finishFirstRun!: () => void;
+    const firstListing = new Promise<{ CommonPrefixes: never[] }>(resolve => {
+      finishFirstRun = () => resolve({ CommonPrefixes: [] });
+    });
+    s3Mock
+      .on(ListObjectsV2Command, { Prefix: "app/" })
+      .callsFakeOnce(() => firstListing)
+      .resolves({ CommonPrefixes: [] });
+    mockS3ListVersions("system", []);
+    mockS3ListVersions("mini", []);
+    const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    stop = scheduleReleaseSync(
+      { prisma: testPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      INTERVAL_MS,
+    );
+
+    // Two ticks fire while the first run is still waiting on R2.
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS * 2);
+
+    expect(warnLog).toHaveBeenCalledTimes(2);
+    // The stalled run's list call is the only R2 traffic so far: the skipped
+    // ticks did not start a second walk of the bucket.
+    expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1);
+
+    finishFirstRun();
+    await vi.waitFor(() =>
+      expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(3),
+    );
+
+    // The next tick after the run completed starts a fresh run.
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS);
+    await vi.waitFor(() =>
+      expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(6),
+    );
+    expect(warnLog).toHaveBeenCalledTimes(2);
   });
 });
