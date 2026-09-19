@@ -298,7 +298,7 @@ async function createRelease(
       console.log(`[sync-releases] ${type} ${version}: created concurrently elsewhere, skipping`);
       return "already-synced";
     }
-    throw new Error(`[sync-releases] ${type} ${version}: create failed`, { cause: error });
+    throw error;
   }
 
   console.log(
@@ -340,9 +340,13 @@ export async function syncReleases(
     ]);
 
     for (const version of versions) {
+      // Name the release in any failure, whichever step raised it, so the
+      // scheduled run log does not need to be traced back to a version.
       const outcome = synced.has(version)
         ? "already-synced"
-        : await createRelease(clients, config, decide, type, version);
+        : await createRelease(clients, config, decide, type, version).catch((error: unknown) => {
+            throw new Error(`[sync-releases] ${type} ${version}: sync failed`, { cause: error });
+          });
       stats[outcome]++;
 
       if (outcome === "aborted") {

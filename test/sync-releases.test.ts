@@ -423,7 +423,7 @@ describe("syncReleases", () => {
         createAtDefaultRollout,
       ),
     ).rejects.toMatchObject({
-      message: "[sync-releases] app 9.9.9: create failed",
+      message: "[sync-releases] app 9.9.9: sync failed",
       cause: expect.objectContaining({ code: "P2002" }),
     });
   });
