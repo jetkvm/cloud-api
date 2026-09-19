@@ -216,6 +216,18 @@ async function listSyncedVersions(prisma: PrismaClient, type: ReleaseType): Prom
   return new Set(releases.map(release => release.version));
 }
 
+async function releaseExists(
+  prisma: PrismaClient,
+  type: ReleaseType,
+  version: string,
+): Promise<boolean> {
+  const release = await prisma.release.findUnique({
+    where: { version_type: { version, type } },
+    select: { id: true },
+  });
+  return release !== null;
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002"
@@ -279,8 +291,10 @@ async function createRelease(
     });
   } catch (error) {
     // Another API instance can win the race between the version listing and
-    // this insert. The row it wrote is the one we wanted, so treat it as synced.
-    if (isUniqueViolation(error)) {
+    // this insert, in which case the row it wrote is the one we wanted. Any
+    // other unique violation (a stale id sequence after a data import, say)
+    // leaves no row and is a real failure.
+    if (isUniqueViolation(error) && (await releaseExists(clients.prisma, type, version))) {
       console.log(`[sync-releases] ${type} ${version}: created concurrently elsewhere, skipping`);
       return "already-synced";
     }
@@ -326,9 +340,13 @@ export async function syncReleases(
     ]);
 
     for (const version of versions) {
+      // Name the release in any failure, whichever step raised it, so the
+      // scheduled run log does not need to be traced back to a version.
       const outcome = synced.has(version)
         ? "already-synced"
-        : await createRelease(clients, config, decide, type, version);
+        : await createRelease(clients, config, decide, type, version).catch((error: unknown) => {
+            throw new Error(`[sync-releases] ${type} ${version}: sync failed`, { cause: error });
+          });
       stats[outcome]++;
 
       if (outcome === "aborted") {

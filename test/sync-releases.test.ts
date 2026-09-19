@@ -4,7 +4,7 @@ import {
   ListObjectsV2Command,
   S3Client,
 } from "@aws-sdk/client-s3";
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, beforeEach, it, vi } from "vitest";
 
 import {
@@ -376,6 +376,7 @@ describe("syncReleases", () => {
     const racingPrisma = {
       release: {
         findMany: async () => [],
+        findUnique: (args: unknown) => testPrisma.release.findUnique(args as any),
         create: (args: unknown) => testPrisma.release.create(args as any),
       },
     } as unknown as PrismaClient;
@@ -391,6 +392,40 @@ describe("syncReleases", () => {
       where: { version_type: { version, type: "app" } },
     });
     expect(release.url).toBe("https://cdn.test.com/other-instance");
+  });
+
+  it("fails on a unique violation that left no release row behind", async () => {
+    const version = "9.9.9";
+    mockS3ListVersions("app", [version]);
+    mockS3HashFile("app", version, "app-hash");
+
+    // A stale id sequence (a database restored from a dump) makes the insert
+    // fail on the primary key with the same error code as the race above,
+    // but no row for this version exists afterwards.
+    const stalePrisma = {
+      release: {
+        findMany: async () => [],
+        findUnique: async () => null,
+        create: async () => {
+          throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+            code: "P2002",
+            clientVersion: "test",
+            meta: { target: ["id"] },
+          });
+        },
+      },
+    } as unknown as PrismaClient;
+
+    await expect(
+      syncReleases(
+        { prisma: stalePrisma, s3Client: syncS3Client },
+        { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+        createAtDefaultRollout,
+      ),
+    ).rejects.toMatchObject({
+      message: "[sync-releases] app 9.9.9: sync failed",
+      cause: expect.objectContaining({ code: "P2002" }),
+    });
   });
 });
 
