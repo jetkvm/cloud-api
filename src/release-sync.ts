@@ -1,9 +1,4 @@
-import {
-  GetObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-  paginateListObjectsV2,
-} from "@aws-sdk/client-s3";
+import { GetObjectCommand, S3Client, paginateListObjectsV2 } from "@aws-sdk/client-s3";
 import { Prisma, PrismaClient } from "@prisma/client";
 import semver from "semver";
 
@@ -171,16 +166,20 @@ async function listStableVersions(
   bucketName: string,
   type: ReleaseType,
 ): Promise<string[]> {
-  const response = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${type}/`,
-      Delimiter: "/",
-    }),
-  );
+  const prefixes: string[] = [];
+  for await (const page of paginateListObjectsV2(
+    { client: s3Client },
+    { Bucket: bucketName, Prefix: `${type}/`, Delimiter: "/" },
+  )) {
+    for (const cp of page.CommonPrefixes ?? []) {
+      if (cp.Prefix) {
+        prefixes.push(cp.Prefix);
+      }
+    }
+  }
 
-  return (response.CommonPrefixes ?? [])
-    .map(cp => cp.Prefix?.split("/")[1])
+  return prefixes
+    .map(prefix => prefix.split("/")[1])
     .filter((version): version is string => Boolean(version))
     .filter(
       version => Boolean(semver.valid(version)) && semver.prerelease(version) === null,

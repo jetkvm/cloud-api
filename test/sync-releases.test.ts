@@ -35,9 +35,20 @@ function mockS3UploadedAt(prefix: ReleaseType, version: string, at: Date) {
   });
 }
 
-function mockS3ListVersions(prefix: ReleaseType, versions: string[]) {
-  s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/` }).resolves({
-    CommonPrefixes: versions.map(v => ({ Prefix: `${prefix}/${v}/` })),
+/** Lists `versions` under `prefix`, one page per inner array, as R2 does past 1,000 keys. */
+function mockS3ListVersions(prefix: ReleaseType, ...pages: string[][]) {
+  pages.forEach((versions, index) => {
+    const last = index === pages.length - 1;
+    s3Mock
+      .on(ListObjectsV2Command, {
+        Prefix: `${prefix}/`,
+        ContinuationToken: index === 0 ? undefined : `page-${index}`,
+      })
+      .resolves({
+        CommonPrefixes: versions.map(v => ({ Prefix: `${prefix}/${v}/` })),
+        IsTruncated: !last,
+        NextContinuationToken: last ? undefined : `page-${index + 1}`,
+      });
   });
 }
 
@@ -246,6 +257,27 @@ describe("syncReleases", () => {
 
     // Prereleases are filtered out by listStableVersions.
     expect(prerelease).toBeNull();
+  });
+
+  it("registers versions from every page of a truncated listing", async () => {
+    const firstPage = "9.9.20";
+    const secondPage = "9.9.21";
+    mockS3ListVersions("app", [firstPage], [secondPage]);
+    mockS3HashFile("app", firstPage, "first-page-hash");
+    mockS3HashFile("app", secondPage, "second-page-hash");
+
+    const stats = await syncReleases(
+      { prisma: testPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      createAtDefaultRollout,
+    );
+
+    expect(stats).toMatchObject({ created: 2 });
+    const created = await testPrisma.release.findMany({
+      where: { type: "app", version: { in: [firstPage, secondPage] } },
+      orderBy: { version: "asc" },
+    });
+    expect(created.map(release => release.version)).toEqual([firstPage, secondPage]);
   });
 
   it("defers a version whose objects changed within the settle window", async () => {
