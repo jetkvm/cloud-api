@@ -26,6 +26,8 @@ export interface SyncConfig {
    * (an operator at a terminal can judge the artifact list for themselves).
    */
   uploadSettleMs?: number;
+  /** One version whose upload the caller vouches is complete: it skips the settle check. */
+  settled?: { type: ReleaseType; version: string };
 }
 
 export interface ReleaseArtifactInput {
@@ -248,7 +250,8 @@ async function createRelease(
   // Listed after the artifact scan on purpose: an upload that was active at
   // any point during the scan leaves an object newer than the window, so the
   // snapshot above is discarded rather than registered.
-  if (config.uploadSettleMs) {
+  const vouched = config.settled?.type === type && config.settled.version === version;
+  if (config.uploadSettleMs && !vouched) {
     const newest = await newestUploadTime(clients.s3Client, config.bucketName, type, version);
     if (newest && Date.now() - newest.getTime() < config.uploadSettleMs) {
       console.log(
@@ -373,7 +376,7 @@ const RELEASE_SYNC_INTERVAL_MS = 30 * 60 * 1000;
 
 /** Runs one unattended sync, or resolves to "busy" while another run is in progress. */
 export type ReleaseSyncRunner = (
-  options?: Pick<SyncConfig, "uploadSettleMs">,
+  options?: Pick<SyncConfig, "settled">,
 ) => Promise<SyncStats | "busy">;
 
 /**
