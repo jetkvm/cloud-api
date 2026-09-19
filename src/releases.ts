@@ -1,15 +1,12 @@
 import { Request, Response } from "express";
 import { prisma } from "./db";
-import { BadRequestError, InternalServerError, NotFoundError } from "./errors";
+import { BadRequestError, ConflictError, InternalServerError, NotFoundError } from "./errors";
+import type { ReleaseSyncRunner } from "./release-sync";
 import semver from "semver";
 
-import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { LRUCache } from "lru-cache";
+import { baseUrl, bucketName, s3Client, s3ObjectExists, versionHasSkuSupport } from "./s3";
 
 import {
   getDeviceRolloutBucket,
@@ -24,6 +21,7 @@ import {
   isKnownSku,
   legacyCompatibleSkus,
   otaArtifacts,
+  OTA_PREFIXES,
   type OtaKind,
   type Artifact,
 } from "./skus";
@@ -75,8 +73,12 @@ type RetrieveQuery = z.infer<typeof retrieveQuerySchema>;
  * Parses query parameters and converts ZodError to BadRequestError.
  */
 function parseQuery<T>(schema: z.ZodSchema<T>, req: Request): T {
+  return parseOrBadRequest(schema, req.query);
+}
+
+function parseOrBadRequest<T>(schema: z.ZodSchema<T>, input: unknown): T {
   try {
-    return schema.parse(req.query);
+    return schema.parse(input);
   } catch (error) {
     if (error instanceof ZodError) {
       const message = error.issues.map((e: z.ZodIssue) => e.message).join(", ");
@@ -100,15 +102,6 @@ interface DbRelease {
     hash: string;
   }[];
 }
-
-const s3Client = new S3Client({
-  endpoint: process.env.R2_ENDPOINT!,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-  region: "auto",
-});
 
 const releaseCache = new LRUCache<string, ReleaseMetadata>({
   max: 1000,
@@ -134,9 +127,6 @@ export function clearCaches() {
   sigUrlCache.clear();
 }
 
-const bucketName = process.env.R2_BUCKET;
-const baseUrl = process.env.R2_CDN_URL;
-
 /**
  * The one error for "this version ships no artifact for this SKU", whichever
  * path detects it: a skus/ folder without this SKU, a pre-SKU version asked
@@ -146,41 +136,7 @@ function noArtifactForSku(version: string, sku: string): NotFoundError {
   return new NotFoundError(`Version ${version} has no artifact for SKU "${sku}"`);
 }
 
-/**
- * Checks if an object exists in S3/R2 by attempting a HeadObjectCommand.
- * Returns true if the object exists, false otherwise.
- */
-async function s3ObjectExists(key: string): Promise<boolean> {
-  try {
-    await s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
-    return true;
-  } catch (error: any) {
-    // HeadObjectCommand throws NotFound, but some S3-compatible stores (like R2) may throw NoSuchKey
-    if (
-      error.name === "NotFound" ||
-      error.name === "NoSuchKey" ||
-      error.$metadata?.httpStatusCode === 404
-    ) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-/**
- * Checks if a version was uploaded with SKU folder structure.
- * Returns true if any skus/ subfolder exists for this version.
- */
-async function versionHasSkuSupport(prefix: string, version: string): Promise<boolean> {
-  const response = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${prefix}/${version}/skus/`,
-      MaxKeys: 1,
-    }),
-  );
-  return (response.Contents?.length ?? 0) > 0;
-}
+const objectExists = (key: string) => s3ObjectExists(s3Client, bucketName, key);
 
 /**
  * Resolves the artifact path for a given version and SKU.
@@ -205,10 +161,10 @@ async function resolveArtifactPath(
   sku: string,
   file: string,
 ): Promise<string> {
-  if (await versionHasSkuSupport(prefix, version)) {
+  if (await versionHasSkuSupport(s3Client, bucketName, prefix, version)) {
     const skuPath = `${prefix}/${version}/skus/${sku}/${file}`;
 
-    if (await s3ObjectExists(skuPath)) {
+    if (await objectExists(skuPath)) {
       return skuPath;
     }
 
@@ -243,7 +199,7 @@ async function resolveSigUrl(
   try {
     const path = await resolveArtifactPath(artifact.prefix, version, sku, artifact.file);
     const sigKey = `${path}.sig`;
-    if (await s3ObjectExists(sigKey)) {
+    if (await objectExists(sigKey)) {
       const url = `${baseUrl}/${sigKey}`;
       sigUrlCache.set(cacheKey, url);
       return url;
@@ -389,7 +345,7 @@ async function resolveSigUrlFromArtifactUrl(
   const sigUrl = `${artifactUrl}.sig`;
   try {
     const sigKey = `${objectKeyFromArtifactUrl(artifactUrl)}.sig`;
-    if (await s3ObjectExists(sigKey)) {
+    if (await objectExists(sigKey)) {
       sigUrlCache.set(cacheKey, sigUrl);
       return sigUrl;
     }
@@ -693,7 +649,7 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       recovery.file,
     );
 
-    if (!(await s3ObjectExists(artifactPath))) {
+    if (!(await objectExists(artifactPath))) {
       throw new NotFoundError(`Recovery image not found for version ${latestVersion}`);
     }
 
@@ -750,7 +706,7 @@ function latestArtifactRedirect(kind: OtaKind) {
         artifact.file,
       );
 
-      if (!(await s3ObjectExists(artifactPath))) {
+      if (!(await objectExists(artifactPath))) {
         throw new NotFoundError(`${prefix} artifact not found for version ${latestVersion}`);
       }
 
@@ -760,3 +716,34 @@ function latestArtifactRedirect(kind: OtaKind) {
 }
 
 export const RetrieveLatestApp = latestArtifactRedirect("app");
+
+const syncBodySchema = z
+  .object({
+    type: z.string().refine(type => OTA_PREFIXES.includes(type), "Unknown release type"),
+    version: z.string().min(1),
+  })
+  .partial()
+  .refine(
+    body => (body.type === undefined) === (body.version === undefined),
+    "type and version go together",
+  )
+  .transform(body =>
+    body.type && body.version ? { type: body.type, version: body.version } : undefined,
+  );
+
+/**
+ * POST /releases/sync: register every stable R2 version missing from the DB
+ * and answer with the per-outcome counts. With `{ type, version }` in the
+ * body, that one version skips the settle window: the caller vouches its
+ * last object is written. Every other version keeps it.
+ */
+export function Sync(runner: ReleaseSyncRunner) {
+  return async (req: Request, res: Response) => {
+    const settled = parseOrBadRequest(syncBodySchema, req.body ?? {});
+    const stats = await runner({ settled });
+    if (stats === "busy") {
+      throw new ConflictError("A release sync is already in progress");
+    }
+    return res.json(stats);
+  };
+}
