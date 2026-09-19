@@ -12,17 +12,21 @@ describe("bearerToken", () => {
     return { headers: { authorization } } as unknown as Request;
   }
 
-  it("calls next for the configured token", () => {
-    const next = vi.fn();
-    guard(request("Bearer release-sync-secret"), res, next);
-    expect(next).toHaveBeenCalledOnce();
-  });
+  it.each(["Bearer release-sync-secret", "bearer release-sync-secret", "BEARER  release-sync-secret"])(
+    "calls next for %j",
+    authorization => {
+      const next = vi.fn();
+      guard(request(authorization), res, next);
+      expect(next).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     ["no header", undefined],
     ["wrong token", "Bearer nope"],
     ["missing scheme", "release-sync-secret"],
     ["prefix of the token", "Bearer release-sync"],
+    ["token in a different case", "Bearer RELEASE-SYNC-SECRET"],
   ])("rejects %s without calling next", (_label, authorization) => {
     const next = vi.fn();
     expect(() => guard(request(authorization), res, next)).toThrow(UnauthorizedError);

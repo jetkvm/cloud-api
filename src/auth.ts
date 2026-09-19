@@ -64,7 +64,8 @@ const sha256 = (value: string) => createHash("sha256").update(value).digest();
 export const bearerToken = (expected: string) => {
   const expectedDigest = sha256(expected);
   return (req: Request, res: Response, next: NextFunction) => {
-    const presented = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    // The scheme name is case-insensitive (RFC 9110); the token is not.
+    const presented = req.headers.authorization?.match(/^Bearer +(.+)$/i)?.[1];
     if (!presented || !timingSafeEqual(sha256(presented), expectedDigest)) {
       throw new UnauthorizedError("Invalid bearer token");
     }
