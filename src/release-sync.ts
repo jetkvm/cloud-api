@@ -31,9 +31,18 @@ export const DEFAULT_ROLLOUT_PERCENTAGE = 10;
 export type ReleaseOutcome =
   | "created"
   | "already-synced"
+  | "uploading"
   | "no-artifacts"
   | "skipped"
   | "aborted";
+
+/**
+ * A version whose newest object changed more recently than this is still being
+ * uploaded (the upload script writes several files per SKU). Registering it
+ * now would freeze a partial SKU set or a stale hash, since sync never rewrites
+ * a row. Shorter than the schedule interval, so it costs at most one tick.
+ */
+export const UPLOAD_SETTLE_MS = 10 * 60 * 1000;
 
 export type ReleaseDecision =
   | { kind: "create"; rolloutPercentage: number }
@@ -166,6 +175,33 @@ async function listStableVersions(
     .sort(semver.compare);
 }
 
+/** Newest LastModified among every object under `${type}/${version}/`, or undefined when empty. */
+async function newestUploadTime(
+  s3Client: S3Client,
+  bucketName: string,
+  type: ReleaseType,
+  version: string,
+): Promise<Date | undefined> {
+  let newest: Date | undefined;
+  let continuationToken: string | undefined;
+  do {
+    const response = await s3Client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: `${type}/${version}/`,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const object of response.Contents ?? []) {
+      if (object.LastModified && (!newest || object.LastModified > newest)) {
+        newest = object.LastModified;
+      }
+    }
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+  return newest;
+}
+
 async function listSyncedVersions(prisma: PrismaClient, type: ReleaseType): Promise<Set<string>> {
   const releases = await prisma.release.findMany({
     where: { type },
@@ -187,6 +223,14 @@ async function createRelease(
   type: ReleaseType,
   version: string,
 ): Promise<ReleaseOutcome> {
+  const newest = await newestUploadTime(clients.s3Client, config.bucketName, type, version);
+  if (newest && Date.now() - newest.getTime() < UPLOAD_SETTLE_MS) {
+    console.log(
+      `[sync-releases] ${type} ${version}: upload still settling (last object ${newest.toISOString()}), retrying next run`,
+    );
+    return "uploading";
+  }
+
   const artifacts = await collectReleaseArtifacts(clients, config, type, version);
   if (artifacts.length === 0) {
     console.log(`[sync-releases] ${type} ${version}: skipped, no compatible artifacts`);
@@ -256,6 +300,7 @@ export async function syncReleases(
   const stats: Record<ReleaseOutcome, number> = {
     created: 0,
     "already-synced": 0,
+    uploading: 0,
     "no-artifacts": 0,
     skipped: 0,
     aborted: 0,
@@ -287,7 +332,7 @@ export async function syncReleases(
     );
   }
   console.log(
-    `[sync-releases] done: created=${stats.created} skipped-by-user=${stats.skipped} already-synced=${stats["already-synced"]} no-artifacts=${stats["no-artifacts"]}`,
+    `[sync-releases] done: created=${stats.created} skipped-by-user=${stats.skipped} already-synced=${stats["already-synced"]} uploading=${stats.uploading} no-artifacts=${stats["no-artifacts"]}`,
   );
   return stats;
 }

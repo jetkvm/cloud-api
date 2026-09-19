@@ -12,6 +12,7 @@ import {
   createAtDefaultRollout,
   scheduleReleaseSync,
   syncReleases,
+  UPLOAD_SETTLE_MS,
   type ReleaseDecider,
   type ReleaseType,
 } from "../src/release-sync";
@@ -26,6 +27,13 @@ const MINI_WIRELESS_SKU = "jetkvm-mini-wireless";
 const SYNC_BUCKET = "test-bucket";
 const SYNC_BASE_URL = "https://cdn.test.com";
 const syncS3Client = new S3Client({});
+
+/** Makes the settle check see one object under the version uploaded at `at`. */
+function mockS3UploadedAt(prefix: ReleaseType, version: string, at: Date) {
+  s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/${version}/` }).resolves({
+    Contents: [{ Key: `${prefix}/${version}/${otaFileForPrefix(prefix)}`, LastModified: at }],
+  });
+}
 
 function mockS3ListVersions(prefix: ReleaseType, versions: string[]) {
   s3Mock.on(ListObjectsV2Command, { Prefix: `${prefix}/` }).resolves({
@@ -68,6 +76,9 @@ beforeEach(() => {
   s3Mock
     .on(HeadObjectCommand)
     .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+  // Listings a test does not mock explicitly (the upload settle check) see an
+  // empty folder. More specific .on(..., { Prefix }) stubs registered later win.
+  s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] });
 });
 
 describe("sync-releases script", () => {
@@ -200,6 +211,7 @@ describe("sync-releases script", () => {
     expect(stats).toEqual({
       created: 1,
       "already-synced": 1,
+      uploading: 0,
       "no-artifacts": 0,
       skipped: 0,
       aborted: 0,
@@ -236,6 +248,36 @@ describe("sync-releases script", () => {
 
     // Prereleases are filtered out by listStableVersions.
     expect(prerelease).toBeNull();
+  });
+
+  it("defers a version whose objects changed within the settle window", async () => {
+    const fresh = "9.9.10";
+    const settled = "9.9.11";
+    mockS3ListVersions("app", [fresh, settled]);
+    mockS3ListVersions("system", []);
+    mockS3ListVersions("mini", []);
+    mockS3HashFile("app", fresh, "fresh-hash");
+    mockS3HashFile("app", settled, "settled-hash");
+    mockS3UploadedAt("app", fresh, new Date(Date.now() - 60 * 1000));
+    mockS3UploadedAt("app", settled, new Date(Date.now() - UPLOAD_SETTLE_MS - 60 * 1000));
+
+    const stats = await syncReleases(
+      { prisma: testPrisma, s3Client: syncS3Client },
+      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+      createAtDefaultRollout,
+    );
+
+    expect(stats).toMatchObject({ created: 1, uploading: 1 });
+    expect(
+      await testPrisma.release.findUnique({
+        where: { version_type: { version: fresh, type: "app" } },
+      }),
+    ).toBeNull();
+    expect(
+      await testPrisma.release.findUnique({
+        where: { version_type: { version: settled, type: "app" } },
+      }),
+    ).toMatchObject({ hash: "settled-hash" });
   });
 
   it("honours the decider's rollout, skip and abort answers", async () => {
