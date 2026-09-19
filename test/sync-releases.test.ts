@@ -5,17 +5,21 @@ import {
   S3Client,
 } from "@aws-sdk/client-s3";
 import { Prisma, PrismaClient } from "@prisma/client";
+import type { Request, Response } from "express";
 import { afterEach, describe, expect, beforeEach, it, vi } from "vitest";
 
 import {
   collectReleaseArtifacts,
   createAtDefaultRollout,
+  createReleaseSyncRunner,
   scheduleReleaseSync,
   syncReleases,
   UPLOAD_SETTLE_MS,
   type ReleaseDecider,
   type ReleaseType,
 } from "../src/release-sync";
+import { Sync } from "../src/releases";
+import { ConflictError } from "../src/errors";
 import { otaFileForPrefix } from "../src/skus";
 
 import { createAsyncIterable, s3Mock, testPrisma } from "./setup";
@@ -91,6 +95,13 @@ beforeEach(() => {
   // an empty folder. More specific .on(..., { Prefix }) stubs registered later win.
   s3Mock.on(ListObjectsV2Command).resolves({ Contents: [] });
 });
+
+function newRunner() {
+  return createReleaseSyncRunner(
+    { prisma: testPrisma, s3Client: syncS3Client },
+    { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
+  );
+}
 
 describe("syncReleases", () => {
   it("marks legacy app artifacts compatible with the default SKU only", async () => {
@@ -454,11 +465,7 @@ describe("scheduleReleaseSync", () => {
     mockS3HashFile("app", version, "app-hash");
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    stop = scheduleReleaseSync(
-      { prisma: testPrisma, s3Client: syncS3Client },
-      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
-      INTERVAL_MS,
-    );
+    stop = scheduleReleaseSync(newRunner(), INTERVAL_MS);
 
     await vi.waitFor(() => expect(errorLog).toHaveBeenCalledOnce());
     expect(
@@ -488,11 +495,7 @@ describe("scheduleReleaseSync", () => {
       .resolves({ CommonPrefixes: [] });
     const warnLog = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    stop = scheduleReleaseSync(
-      { prisma: testPrisma, s3Client: syncS3Client },
-      { bucketName: SYNC_BUCKET, baseUrl: SYNC_BASE_URL },
-      INTERVAL_MS,
-    );
+    stop = scheduleReleaseSync(newRunner(), INTERVAL_MS);
 
     // Two ticks fire while the first run is still waiting on R2.
     await vi.advanceTimersByTimeAsync(INTERVAL_MS * 2);
@@ -513,5 +516,35 @@ describe("scheduleReleaseSync", () => {
       expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(6),
     );
     expect(warnLog).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Sync handler", () => {
+  const request = {} as Request;
+
+  it("registers a version uploaded moments ago and answers with the counts", async () => {
+    const version = "9.9.12";
+    mockS3ListVersions("app", [version]);
+    mockS3HashFile("app", version, "fresh-hash");
+    // Inside the settle window: the scheduled tick would defer this version,
+    // the endpoint trusts the caller and registers it.
+    mockS3UploadedAt("app", version, new Date(Date.now() - 60 * 1000));
+    const res = { json: vi.fn() } as unknown as Response;
+
+    await Sync(newRunner())(request, res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 1, uploading: 0 }));
+    const release = await testPrisma.release.findUniqueOrThrow({
+      where: { version_type: { version, type: "app" } },
+    });
+    expect(release.rolloutPercentage).toBe(10);
+  });
+
+  it("answers 409 while a run is already in progress", async () => {
+    const busyRunner = vi.fn().mockResolvedValue("busy");
+
+    await expect(Sync(busyRunner)(request, { json: vi.fn() } as unknown as Response)).rejects.toThrow(
+      ConflictError,
+    );
   });
 });

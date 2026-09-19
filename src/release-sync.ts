@@ -44,6 +44,8 @@ export type ReleaseOutcome =
   | "skipped"
   | "aborted";
 
+export type SyncStats = Record<ReleaseOutcome, number>;
+
 /** Settle window for unattended runs; shorter than the interval, so it costs at most one tick. */
 export const UPLOAD_SETTLE_MS = 10 * 60 * 1000;
 
@@ -322,8 +324,8 @@ export async function syncReleases(
   clients: SyncClients,
   config: SyncConfig,
   decide: ReleaseDecider,
-): Promise<Record<ReleaseOutcome, number>> {
-  const stats: Record<ReleaseOutcome, number> = {
+): Promise<SyncStats> {
+  const stats: SyncStats = {
     created: 0,
     "already-synced": 0,
     uploading: 0,
@@ -369,36 +371,54 @@ export async function syncReleases(
 
 const RELEASE_SYNC_INTERVAL_MS = 30 * 60 * 1000;
 
+/** Runs one unattended sync, or resolves to "busy" while another run is in progress. */
+export type ReleaseSyncRunner = (
+  options?: Pick<SyncConfig, "uploadSettleMs">,
+) => Promise<SyncStats | "busy">;
+
 /**
- * Runs the sync now and then every `intervalMs`, inside the API process.
- * A tick that fires while the previous run is still going is skipped, not
- * queued. A failed run is logged and the schedule continues, so one bad R2
- * or DB response never stops future syncs.
- * Returns a function that stops the schedule.
+ * One in-process sync at a time, shared by every trigger (the timer and the
+ * HTTP endpoint): a second run would only walk the bucket again and lose the
+ * (version, type) race to the first.
  */
-export function scheduleReleaseSync(
+export function createReleaseSyncRunner(
   clients: SyncClients,
   config: SyncConfig,
-  intervalMs: number = RELEASE_SYNC_INTERVAL_MS,
-): () => void {
+): ReleaseSyncRunner {
   let running = false;
 
-  const run = async () => {
+  return async (options = {}) => {
     if (running) {
-      console.warn("[sync-releases] previous run still in progress, skipping this tick");
-      return;
+      return "busy";
     }
     running = true;
     try {
-      await syncReleases(
+      return await syncReleases(
         clients,
-        { uploadSettleMs: UPLOAD_SETTLE_MS, ...config },
+        { uploadSettleMs: UPLOAD_SETTLE_MS, ...config, ...options },
         createAtDefaultRollout,
       );
-    } catch (error) {
-      console.error("[sync-releases] scheduled run failed", error);
     } finally {
       running = false;
+    }
+  };
+}
+
+/**
+ * Runs the sync now and then every `intervalMs`. A failed run is logged and
+ * the schedule continues. Returns a function that stops the schedule.
+ */
+export function scheduleReleaseSync(
+  runner: ReleaseSyncRunner,
+  intervalMs: number = RELEASE_SYNC_INTERVAL_MS,
+): () => void {
+  const run = async () => {
+    try {
+      if ((await runner()) === "busy") {
+        console.warn("[sync-releases] previous run still in progress, skipping this tick");
+      }
+    } catch (error) {
+      console.error("[sync-releases] scheduled run failed", error);
     }
   };
 

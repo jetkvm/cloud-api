@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "crypto";
 import { type NextFunction, type Request, type Response } from "express";
 import * as jose from "jose";
 import { UnauthorizedError } from "./errors";
@@ -55,4 +56,18 @@ export const authenticated = async (req: Request, res: Response, next: NextFunct
   }
 
   next();
+};
+
+const sha256 = (value: string) => createHash("sha256").update(value).digest();
+
+/** Guards a route with one static bearer token, compared in constant time. */
+export const bearerToken = (expected: string) => {
+  const expectedDigest = sha256(expected);
+  return (req: Request, res: Response, next: NextFunction) => {
+    const presented = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+    if (!presented || !timingSafeEqual(sha256(presented), expectedDigest)) {
+      throw new UnauthorizedError("Invalid bearer token");
+    }
+    next();
+  };
 };

@@ -11,10 +11,10 @@ import * as Webrtc from "./webrtc";
 import * as Releases from "./releases";
 
 import { HttpError } from "./errors";
-import { authenticated } from "./auth";
+import { authenticated, bearerToken } from "./auth";
 import { prisma } from "./db";
 import { baseUrl, bucketName, s3Client } from "./s3";
-import { scheduleReleaseSync } from "./release-sync";
+import { createReleaseSyncRunner, scheduleReleaseSync } from "./release-sync";
 import { initializeWebRTCSignaling } from "./webrtc-signaling";
 
 declare global {
@@ -49,6 +49,7 @@ declare global {
       ICE_SERVERS: string;
 
       ALLOWED_IDENTITIES?: string;
+      RELEASE_SYNC_TOKEN?: string;
     }
   }
 }
@@ -116,12 +117,23 @@ app.get(
   },
 );
 
+// One sync at a time, shared by the scheduled tick below and the upload
+// script's POST /releases/sync. The route exists only with a token configured.
+const releaseSync = createReleaseSyncRunner({ prisma, s3Client }, { bucketName, baseUrl });
+
 app.get("/releases", Releases.Retrieve);
 app.get(
   "/releases/system_recovery/latest",
   Releases.RetrieveLatestSystemRecovery,
 );
 app.get("/releases/app/latest", Releases.RetrieveLatestApp);
+if (process.env.RELEASE_SYNC_TOKEN) {
+  app.post(
+    "/releases/sync",
+    bearerToken(process.env.RELEASE_SYNC_TOKEN),
+    Releases.Sync(releaseSync),
+  );
+}
 
 app.get("/devices", authenticated, Devices.List);
 app.get("/devices/:id", authenticated, Devices.Retrieve);
@@ -222,4 +234,4 @@ const server = app.listen(PORT, () => {
 initializeWebRTCSignaling(server);
 
 // Register new R2 releases at the default rollout, now and every 30 minutes.
-scheduleReleaseSync({ prisma, s3Client }, { bucketName, baseUrl });
+scheduleReleaseSync(releaseSync);
