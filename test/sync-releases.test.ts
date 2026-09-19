@@ -269,6 +269,13 @@ describe("syncReleases", () => {
         where: { version_type: { version: fresh, type: "app" } },
       }),
     ).toBeNull();
+    // The settle listing must come after the artifact scan, so an upload that
+    // overlaps the scan is seen. The deferred version was therefore scanned.
+    const calls = s3Mock.calls().map(call => call.args[0].input as { Key?: string; Prefix?: string });
+    const scanIndex = calls.findIndex(input => input.Key === `app/${fresh}/jetkvm_app.sha256`);
+    const settleIndex = calls.findIndex(input => input.Prefix === `app/${fresh}/`);
+    expect(scanIndex).toBeGreaterThanOrEqual(0);
+    expect(settleIndex).toBeGreaterThan(scanIndex);
     expect(
       await testPrisma.release.findUnique({
         where: { version_type: { version: settled, type: "app" } },

@@ -24,11 +24,11 @@ export interface SyncConfig {
   baseUrl: string;
   skus?: string[];
   /**
-   * Defer a version whose newest object changed within this many ms: the
-   * upload script writes several files per SKU, and sync never rewrites a
-   * row, so registering mid-upload would freeze a partial SKU set or a stale
-   * hash. Unset or 0 disables the check (an operator at a terminal can judge
-   * the artifact list for themselves).
+   * Defer a version whose newest object changed within this many ms, checked
+   * after the artifact scan: the upload script writes several files per SKU,
+   * and sync never rewrites a row, so a scan that overlapped an upload would
+   * freeze a partial SKU set or a stale hash. Unset or 0 disables the check
+   * (an operator at a terminal can judge the artifact list for themselves).
    */
   uploadSettleMs?: number;
 }
@@ -230,6 +230,11 @@ async function createRelease(
   type: ReleaseType,
   version: string,
 ): Promise<ReleaseOutcome> {
+  const artifacts = await collectReleaseArtifacts(clients, config, type, version);
+
+  // Listed after the artifact scan on purpose: an upload that was active at
+  // any point during the scan leaves an object newer than the window, so the
+  // snapshot above is discarded rather than registered.
   if (config.uploadSettleMs) {
     const newest = await newestUploadTime(clients.s3Client, config.bucketName, type, version);
     if (newest && Date.now() - newest.getTime() < config.uploadSettleMs) {
@@ -240,7 +245,6 @@ async function createRelease(
     }
   }
 
-  const artifacts = await collectReleaseArtifacts(clients, config, type, version);
   if (artifacts.length === 0) {
     console.log(`[sync-releases] ${type} ${version}: skipped, no compatible artifacts`);
     return "no-artifacts";
