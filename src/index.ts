@@ -13,6 +13,8 @@ import * as Releases from "./releases";
 import { HttpError } from "./errors";
 import { authenticated } from "./auth";
 import { prisma } from "./db";
+import { baseUrl, bucketName, s3Client } from "./s3";
+import { scheduleReleaseSync } from "./release-sync";
 import { initializeWebRTCSignaling } from "./webrtc-signaling";
 
 declare global {
@@ -218,3 +220,6 @@ const server = app.listen(PORT, () => {
 });
 
 initializeWebRTCSignaling(server);
+
+// Register new R2 releases at the default rollout, now and every 30 minutes.
+scheduleReleaseSync({ prisma, s3Client }, { bucketName, baseUrl });

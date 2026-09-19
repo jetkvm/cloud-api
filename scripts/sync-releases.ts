@@ -8,53 +8,27 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createInterface } from "node:readline/promises";
 
-import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  S3Client,
-} from "@aws-sdk/client-s3";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { PrismaClient } from "@prisma/client";
 import semver from "semver";
 
-import { objectKeyFromArtifactUrl, streamToString } from "../src/helpers";
-import { OTA_PREFIXES, legacyCompatibleSkus, otaFileForPrefix, skusForPrefix } from "../src/skus";
+import { objectKeyFromArtifactUrl } from "../src/helpers";
+import { baseUrl, bucketName, s3Client, s3ObjectExists } from "../src/s3";
+import {
+  DEFAULT_ROLLOUT_PERCENTAGE,
+  createAtDefaultRollout,
+  syncReleases,
+  type ReleaseArtifactInput,
+  type ReleaseDecider,
+  type ReleaseType,
+  type SyncClients,
+  type SyncConfig,
+} from "../src/release-sync";
 
-/** An R2 prefix, which is also the Release.type column value. */
-type ReleaseType = string;
+// Operator front end for src/release-sync.ts: signature verification output
+// and a confirmation prompt before each production DB write.
 
 const OTA_ROOT_KEY_FPR = "AF5A36A993D828FEFE7C18C2D1B9856C26A79E95";
-
-interface SyncClients {
-  prisma: PrismaClient;
-  s3Client: S3Client;
-}
-
-interface SyncConfig {
-  bucketName: string;
-  baseUrl: string;
-  skus?: string[];
-}
-
-interface ReleaseArtifactInput {
-  url: string;
-  hash: string;
-  compatibleSkus: string[];
-}
-
-const DEFAULT_ROLLOUT_PERCENTAGE = 10;
-
-type ReleaseOutcome =
-  | "created"
-  | "already-synced"
-  | "no-artifacts"
-  | "skipped"
-  | "aborted";
-
-type ReleaseDecision =
-  | { kind: "create"; rolloutPercentage: number }
-  | { kind: "skip" }
-  | { kind: "abort" };
 
 interface LatestExistingRelease {
   version: string;
@@ -360,305 +334,41 @@ async function promptRolloutPercentage(
   }
 }
 
-async function confirmProductionCreate(
+function confirmProductionCreate(
   clients: SyncClients,
   config: SyncConfig,
-  type: ReleaseType,
-  version: string,
-  artifacts: ReleaseArtifactInput[],
-): Promise<ReleaseDecision> {
-  if (process.env.NODE_ENV !== "production") {
-    return { kind: "create", rolloutPercentage: DEFAULT_ROLLOUT_PERCENTAGE };
-  }
+): ReleaseDecider {
+  return async (type, version, artifacts) => {
+    const [artifactInfos, latestExisting] = await Promise.all([
+      loadArtifactDisplayInfo(clients, config, artifacts),
+      findLatestExistingRelease(clients.prisma, type),
+    ]);
 
-  if (!stdin.isTTY || !stdout.isTTY) {
-    throw new Error(
-      "Production release sync requires an interactive terminal for DB write confirmation.",
-    );
-  }
+    printArtifactSummary(type, version, artifactInfos, latestExisting);
 
-  const [artifactInfos, latestExisting] = await Promise.all([
-    loadArtifactDisplayInfo(clients, config, artifacts),
-    findLatestExistingRelease(clients.prisma, type),
-  ]);
+    const readline = createInterface({ input: stdin, output: stdout });
+    try {
+      const rolloutPercentage = await promptRolloutPercentage(readline);
 
-  printArtifactSummary(type, version, artifactInfos, latestExisting);
-
-  const readline = createInterface({ input: stdin, output: stdout });
-  try {
-    const rolloutPercentage = await promptRolloutPercentage(readline);
-
-    const confirmation = (
-      await readline.question(
-        `  Create production ${type} release ${version} at ${rolloutPercentage}% rollout? [y/N/a (abort run)] `,
+      const confirmation = (
+        await readline.question(
+          `  Create production ${type} release ${version} at ${rolloutPercentage}% rollout? [y/N/a (abort run)] `,
+        )
       )
-    )
-      .trim()
-      .toLowerCase();
+        .trim()
+        .toLowerCase();
 
-    if (["a", "abort"].includes(confirmation)) {
-      return { kind: "abort" };
-    }
-    if (!["y", "yes"].includes(confirmation)) {
-      return { kind: "skip" };
-    }
-    return { kind: "create", rolloutPercentage };
-  } finally {
-    readline.close();
-  }
-}
-
-function isS3NotFound(error: any): boolean {
-  return (
-    error.name === "NotFound" ||
-    error.name === "NoSuchKey" ||
-    error.$metadata?.httpStatusCode === 404
-  );
-}
-
-async function s3ObjectExists(
-  s3Client: S3Client,
-  bucketName: string,
-  key: string,
-): Promise<boolean> {
-  try {
-    await s3Client.send(new HeadObjectCommand({ Bucket: bucketName, Key: key }));
-    return true;
-  } catch (error: any) {
-    if (isS3NotFound(error)) {
-      return false;
-    }
-    throw error;
-  }
-}
-
-async function versionHasSkuSupport(
-  s3Client: S3Client,
-  bucketName: string,
-  type: ReleaseType,
-  version: string,
-): Promise<boolean> {
-  const response = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${type}/${version}/skus/`,
-      MaxKeys: 1,
-    }),
-  );
-  return (response.Contents?.length ?? 0) > 0;
-}
-
-async function readHash(
-  s3Client: S3Client,
-  bucketName: string,
-  artifactPath: string,
-): Promise<string | undefined> {
-  try {
-    const response = await s3Client.send(
-      new GetObjectCommand({
-        Bucket: bucketName,
-        Key: `${artifactPath}.sha256`,
-      }),
-    );
-    return streamToString(response.Body);
-  } catch (error: any) {
-    if (isS3NotFound(error)) {
-      return undefined;
-    }
-    throw error;
-  }
-}
-
-function addArtifact(
-  artifactsByUrl: Map<string, ReleaseArtifactInput>,
-  url: string,
-  hash: string,
-  sku: string,
-): void {
-  const artifact = artifactsByUrl.get(url);
-  if (artifact) {
-    if (!artifact.compatibleSkus.includes(sku)) {
-      artifact.compatibleSkus.push(sku);
-    }
-    return;
-  }
-
-  artifactsByUrl.set(url, { url, hash, compatibleSkus: [sku] });
-}
-
-export async function collectReleaseArtifacts(
-  clients: Pick<SyncClients, "s3Client">,
-  config: SyncConfig,
-  type: ReleaseType,
-  version: string,
-): Promise<ReleaseArtifactInput[]> {
-  const skus = config.skus ?? skusForPrefix(type);
-  const artifactFileName = otaFileForPrefix(type);
-
-  if (!(await versionHasSkuSupport(clients.s3Client, config.bucketName, type, version))) {
-    // Pre-SKU artifacts (no skus/ folder) are only safe on the SKUs that
-    // predate the layout. A type with no legacy form treats a version
-    // without skus/ as an upload mistake, not a release.
-    const compatibleSkus = legacyCompatibleSkus(type);
-    if (compatibleSkus.length === 0) {
-      return [];
-    }
-
-    const artifactPath = `${type}/${version}/${artifactFileName}`;
-    const hash = await readHash(clients.s3Client, config.bucketName, artifactPath);
-    if (!hash) {
-      return [];
-    }
-
-    return [
-      {
-        url: `${config.baseUrl}/${artifactPath}`,
-        hash,
-        compatibleSkus,
-      },
-    ];
-  }
-
-  const artifactsByUrl = new Map<string, ReleaseArtifactInput>();
-  for (const sku of skus) {
-    const artifactPath = `${type}/${version}/skus/${sku}/${artifactFileName}`;
-    if (!(await s3ObjectExists(clients.s3Client, config.bucketName, artifactPath))) {
-      continue;
-    }
-
-    const hash = await readHash(clients.s3Client, config.bucketName, artifactPath);
-    if (!hash) {
-      continue;
-    }
-    addArtifact(artifactsByUrl, `${config.baseUrl}/${artifactPath}`, hash, sku);
-  }
-
-  return Array.from(artifactsByUrl.values());
-}
-
-async function listStableVersions(
-  s3Client: S3Client,
-  bucketName: string,
-  type: ReleaseType,
-): Promise<string[]> {
-  const response = await s3Client.send(
-    new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${type}/`,
-      Delimiter: "/",
-    }),
-  );
-
-  return (response.CommonPrefixes ?? [])
-    .map(cp => cp.Prefix?.split("/")[1])
-    .filter((version): version is string => Boolean(version))
-    .filter(
-      version => Boolean(semver.valid(version)) && semver.prerelease(version) === null,
-    )
-    .sort(semver.compare);
-}
-
-async function syncRelease(
-  clients: SyncClients,
-  config: SyncConfig,
-  type: ReleaseType,
-  version: string,
-  artifacts: ReleaseArtifactInput[],
-): Promise<ReleaseOutcome> {
-  if (artifacts.length === 0) {
-    console.log(`[sync-releases] ${type} ${version}: skipped, no compatible artifacts`);
-    return "no-artifacts";
-  }
-
-  // Sync only registers brand-new releases. Existing rows (rollout state, URLs,
-  // artifact compatibility) are left untouched — backfills/repairs are handled
-  // by one-off scripts so a routine sync run can never rewrite production data.
-  const existing = await clients.prisma.release.findUnique({
-    where: { version_type: { version, type } },
-    select: { id: true },
-  });
-
-  if (existing) {
-    console.log(`[sync-releases] ${type} ${version}: already synced, skipping`);
-    return "already-synced";
-  }
-
-  const decision = await confirmProductionCreate(
-    clients,
-    config,
-    type,
-    version,
-    artifacts,
-  );
-  if (decision.kind === "abort") {
-    console.log(`[sync-releases] ${type} ${version}: aborted by user`);
-    return "aborted";
-  }
-  if (decision.kind === "skip") {
-    console.log(`[sync-releases] ${type} ${version}: skipped by user`);
-    return "skipped";
-  }
-
-  const primaryArtifact = artifacts[0];
-  await clients.prisma.release.create({
-    data: {
-      version,
-      type,
-      rolloutPercentage: decision.rolloutPercentage,
-      url: primaryArtifact.url,
-      hash: primaryArtifact.hash,
-      artifacts: {
-        create: artifacts.map(artifact => ({
-          url: artifact.url,
-          hash: artifact.hash,
-          compatibleSkus: artifact.compatibleSkus,
-        })),
-      },
-    },
-  });
-
-  console.log(
-    `[sync-releases] ${type} ${version}: created with ${artifacts.length} artifact(s) at ${decision.rolloutPercentage}% rollout`,
-  );
-  return "created";
-}
-
-export async function syncReleases(
-  clients: SyncClients,
-  config: SyncConfig,
-): Promise<void> {
-  const stats: Record<ReleaseOutcome, number> = {
-    created: 0,
-    "already-synced": 0,
-    "no-artifacts": 0,
-    skipped: 0,
-    aborted: 0,
-  };
-  let abortedAt: { type: ReleaseType; version: string } | null = null;
-
-  outer: for (const type of OTA_PREFIXES) {
-    const versions = await listStableVersions(clients.s3Client, config.bucketName, type);
-
-    for (const version of versions) {
-      const artifacts = await collectReleaseArtifacts(clients, config, type, version);
-      const outcome = await syncRelease(clients, config, type, version, artifacts);
-      stats[outcome]++;
-
-      if (outcome === "aborted") {
-        abortedAt = { type, version };
-        break outer;
+      if (["a", "abort"].includes(confirmation)) {
+        return { kind: "abort" };
       }
+      if (!["y", "yes"].includes(confirmation)) {
+        return { kind: "skip" };
+      }
+      return { kind: "create", rolloutPercentage };
+    } finally {
+      readline.close();
     }
-  }
-
-  if (abortedAt) {
-    console.log(
-      `[sync-releases] aborted at ${abortedAt.type} ${abortedAt.version}; remaining versions in this run were not processed`,
-    );
-  }
-  console.log(
-    `[sync-releases] done: created=${stats.created} skipped-by-user=${stats.skipped} already-synced=${stats["already-synced"]} no-artifacts=${stats["no-artifacts"]}`,
-  );
+  };
 }
 
 function describeDbTarget(): string {
@@ -678,35 +388,32 @@ function describeDbTarget(): string {
 
 async function main(): Promise<void> {
   console.log(
-    `[sync-releases] env=${process.env.NODE_ENV ?? "(unset)"} db=${describeDbTarget()} bucket=${process.env.R2_BUCKET ?? "(unset)"}`,
+    `[sync-releases] env=${process.env.NODE_ENV ?? "(unset)"} db=${describeDbTarget()} bucket=${bucketName ?? "(unset)"}`,
   );
 
+  const isProduction = process.env.NODE_ENV === "production";
+  if (isProduction && (!stdin.isTTY || !stdout.isTTY)) {
+    throw new Error(
+      "Production release sync requires an interactive terminal for DB write confirmation.",
+    );
+  }
+
   const prisma = new PrismaClient();
-  const s3Client = new S3Client({
-    endpoint: process.env.R2_ENDPOINT!,
-    credentials: {
-      accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-      secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-    },
-    region: "auto",
-  });
+  const clients: SyncClients = { prisma, s3Client };
+  const config: SyncConfig = { bucketName, baseUrl };
 
   try {
     await syncReleases(
-      { prisma, s3Client },
-      {
-        bucketName: process.env.R2_BUCKET!,
-        baseUrl: process.env.R2_CDN_URL!,
-      },
+      clients,
+      config,
+      isProduction ? confirmProductionCreate(clients, config) : createAtDefaultRollout,
     );
   } finally {
     await prisma.$disconnect();
   }
 }
 
-if (require.main === module) {
-  main().catch(error => {
-    console.error("[sync-releases] failed", error);
-    process.exit(1);
-  });
-}
+main().catch(error => {
+  console.error("[sync-releases] failed", error);
+  process.exit(1);
+});
