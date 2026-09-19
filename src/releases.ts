@@ -428,8 +428,10 @@ function dbReleaseToMetadata(release: DbRelease, sku: string): ReleaseMetadata {
 }
 
 /**
- * Newest fully rolled out release for the prefix, or null when no release
- * has reached 100% yet (a prefix whose first release is still staged).
+ * Newest fully rolled out release that ships a binary for the SKU, or null
+ * when there is none: the prefix's first release is still staged, or the SKU
+ * is new and its first build has not reached 100% yet. The caller decides
+ * whether the device is in the staged release's bucket before it needs this.
  */
 async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease | null> {
   const rolledOutReleases = await prisma.release.findMany({
@@ -447,9 +449,7 @@ async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease
   const compatibleReleases = rolledOutReleases.filter(r => r.artifacts.length > 0);
 
   if (compatibleReleases.length === 0) {
-    throw new NotFoundError(
-      `No default ${prefix} release available for SKU "${sku}"`,
-    );
+    return null;
   }
 
   const latestVersion = semver.maxSatisfying(
