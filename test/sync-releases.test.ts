@@ -19,7 +19,7 @@ import {
   type ReleaseType,
 } from "../src/release-sync";
 import { Sync } from "../src/releases";
-import { ConflictError } from "../src/errors";
+import { BadRequestError, ConflictError } from "../src/errors";
 import { otaFileForPrefix } from "../src/skus";
 
 import { createAsyncIterable, s3Mock, testPrisma } from "./setup";
@@ -520,31 +520,68 @@ describe("scheduleReleaseSync", () => {
 });
 
 describe("Sync handler", () => {
-  const request = {} as Request;
+  const FRESH_VERSION = "9.9.12";
+  const OTHER_FRESH_VERSION = "9.9.13";
 
-  it("registers a version uploaded moments ago and answers with the counts", async () => {
-    const version = "9.9.12";
-    mockS3ListVersions("app", [version]);
-    mockS3HashFile("app", version, "fresh-hash");
-    // Inside the settle window: the scheduled tick would defer this version,
-    // the endpoint trusts the caller and registers it.
-    mockS3UploadedAt("app", version, new Date(Date.now() - 60 * 1000));
-    const res = { json: vi.fn() } as unknown as Response;
+  function request(body?: unknown): Request {
+    return { body } as Request;
+  }
 
-    await Sync(newRunner())(request, res);
+  function response(): Response {
+    return { json: vi.fn() } as unknown as Response;
+  }
 
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 1, uploading: 0 }));
-    const release = await testPrisma.release.findUniqueOrThrow({
-      where: { version_type: { version, type: "app" } },
-    });
-    expect(release.rolloutPercentage).toBe(10);
+  /** Two versions inside the settle window; the scheduled tick would defer both. */
+  function mockTwoFreshVersions() {
+    mockS3ListVersions("app", [FRESH_VERSION, OTHER_FRESH_VERSION]);
+    for (const version of [FRESH_VERSION, OTHER_FRESH_VERSION]) {
+      mockS3HashFile("app", version, `${version}-hash`);
+      mockS3UploadedAt("app", version, new Date(Date.now() - 60 * 1000));
+    }
+  }
+
+  it("registers only the vouched version and defers the other fresh one", async () => {
+    mockTwoFreshVersions();
+    const res = response();
+
+    await Sync(newRunner())(request({ type: "app", version: FRESH_VERSION }), res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 1, uploading: 1 }));
+    expect(
+      await testPrisma.release.findUnique({
+        where: { version_type: { version: FRESH_VERSION, type: "app" } },
+      }),
+    ).toMatchObject({ rolloutPercentage: 10 });
+    expect(
+      await testPrisma.release.findUnique({
+        where: { version_type: { version: OTHER_FRESH_VERSION, type: "app" } },
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the settle window for every version without a body", async () => {
+    mockTwoFreshVersions();
+    const res = response();
+
+    await Sync(newRunner())(request(), res);
+
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 0, uploading: 2 }));
+  });
+
+  it.each([
+    ["type without version", { type: "app" }],
+    ["version without type", { version: "1.0.0" }],
+    ["unknown type", { type: "firmware", version: "1.0.0" }],
+  ])("rejects %s without running", async (_label, body) => {
+    const run = vi.fn();
+
+    await expect(Sync(run)(request(body), response())).rejects.toThrow(BadRequestError);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("answers 409 while a run is already in progress", async () => {
     const busyRunner = vi.fn().mockResolvedValue("busy");
 
-    await expect(Sync(busyRunner)(request, { json: vi.fn() } as unknown as Response)).rejects.toThrow(
-      ConflictError,
-    );
+    await expect(Sync(busyRunner)(request(), response())).rejects.toThrow(ConflictError);
   });
 });

@@ -21,6 +21,7 @@ import {
   isKnownSku,
   legacyCompatibleSkus,
   otaArtifacts,
+  OTA_PREFIXES,
   type OtaKind,
   type Artifact,
 } from "./skus";
@@ -72,8 +73,12 @@ type RetrieveQuery = z.infer<typeof retrieveQuerySchema>;
  * Parses query parameters and converts ZodError to BadRequestError.
  */
 function parseQuery<T>(schema: z.ZodSchema<T>, req: Request): T {
+  return parseOrBadRequest(schema, req.query);
+}
+
+function parseOrBadRequest<T>(schema: z.ZodSchema<T>, input: unknown): T {
   try {
-    return schema.parse(req.query);
+    return schema.parse(input);
   } catch (error) {
     if (error instanceof ZodError) {
       const message = error.issues.map((e: z.ZodIssue) => e.message).join(", ");
@@ -712,15 +717,30 @@ function latestArtifactRedirect(kind: OtaKind) {
 
 export const RetrieveLatestApp = latestArtifactRedirect("app");
 
+const syncBodySchema = z
+  .object({
+    type: z.string().refine(type => OTA_PREFIXES.includes(type), "Unknown release type"),
+    version: z.string().min(1),
+  })
+  .partial()
+  .refine(
+    body => (body.type === undefined) === (body.version === undefined),
+    "type and version go together",
+  )
+  .transform(body =>
+    body.type && body.version ? { type: body.type, version: body.version } : undefined,
+  );
+
 /**
  * POST /releases/sync: register every stable R2 version missing from the DB
- * and answer with the per-outcome counts. Made for the upload script's last
- * step, so the settle window is off: the caller vouches its last object is
- * written.
+ * and answer with the per-outcome counts. With `{ type, version }` in the
+ * body, that one version skips the settle window: the caller vouches its
+ * last object is written. Every other version keeps it.
  */
 export function Sync(runner: ReleaseSyncRunner) {
   return async (req: Request, res: Response) => {
-    const stats = await runner({ uploadSettleMs: 0 });
+    const settled = parseOrBadRequest(syncBodySchema, req.body ?? {});
+    const stats = await runner({ settled });
     if (stats === "busy") {
       throw new ConflictError("A release sync is already in progress");
     }
