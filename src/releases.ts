@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { BadRequestError, ConflictError, InternalServerError, NotFoundError } from "./errors";
 import type { ReleaseSyncRunner } from "./release-sync";
@@ -468,17 +469,22 @@ async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease
   return latestDefaultRelease;
 }
 
+/**
+ * Newest release that is rolling out at all. A row at 0% is registered but
+ * not yet released, so it must not displace an older release mid-rollout.
+ */
 async function getLatestRelease(prefix: string, sku: string): Promise<DbRelease> {
-  return getReleaseByRange(prefix, sku, "*");
+  return getReleaseByRange(prefix, sku, "*", { rolloutPercentage: { gt: 0 } });
 }
 
 async function getReleaseByRange(
   prefix: string,
   sku: string,
   range: string,
+  where: Prisma.ReleaseWhereInput = {},
 ): Promise<DbRelease> {
   const releases = await prisma.release.findMany({
-    where: { type: prefix },
+    where: { type: prefix, ...where },
     select: compatibleReleaseSelect(sku),
   });
 
