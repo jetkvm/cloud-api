@@ -392,6 +392,21 @@ describe("Retrieve handler", () => {
       });
     });
 
+    it("keeps an in-progress rollout when a newer release is registered at 0%", async () => {
+      // early-adopter hashes to bucket 8, late-adopter to bucket 95.
+      await createDbReleasePair("2.0.0", 100);
+      await createDbReleasePair("2.1.0", 50);
+      await createDbReleasePair("2.2.0", 0);
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter" }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ appVersion: "2.1.0", systemVersion: "2.1.0" });
+
+      const outOfBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "late-adopter" }), outOfBucket);
+      expect(jsonBody(outOfBucket)).toMatchObject({ appVersion: "2.0.0", systemVersion: "2.0.0" });
+    });
+
     it("applies app and system rollout independently", async () => {
       await createDbReleasePair("2.4.0", 100);
       await createDbRelease("app", "2.5.0", 100);
