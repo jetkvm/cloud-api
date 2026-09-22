@@ -36,7 +36,8 @@ export interface ReleaseArtifactInput {
   compatibleSkus: string[];
 }
 
-export const DEFAULT_ROLLOUT_PERCENTAGE = 10;
+/** A new release is registered but served to no device until an operator raises it. */
+export const DEFAULT_ROLLOUT_PERCENTAGE = 0;
 
 export type ReleaseOutcome =
   | "created"

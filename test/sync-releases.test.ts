@@ -201,7 +201,7 @@ describe("syncReleases", () => {
     expect(artifacts).toEqual([]);
   });
 
-  it("creates new releases at 10% with their S3 artifacts and skips already-synced versions", async () => {
+  it("creates new releases at 0% with their S3 artifacts and skips already-synced versions", async () => {
     const version = "9.9.4";
 
     // Pre-existing system row simulates a release the migration (or a prior
@@ -249,8 +249,8 @@ describe("syncReleases", () => {
       where: { version_type: { version: "10.0.0-beta.1", type: "app" } },
     });
 
-    // App release is new — created at 10% rollout with a single legacy-compatible artifact.
-    expect(appRelease.rolloutPercentage).toBe(10);
+    // App release is new — created at 0% rollout with a single legacy-compatible artifact.
+    expect(appRelease.rolloutPercentage).toBe(0);
     expect(appRelease.artifacts).toEqual([
       expect.objectContaining({
         url: `https://cdn.test.com/app/${version}/jetkvm_app`,
@@ -480,7 +480,7 @@ describe("scheduleReleaseSync", () => {
       const release = await testPrisma.release.findUnique({
         where: { version_type: { version, type: "app" } },
       });
-      expect(release?.rolloutPercentage).toBe(10);
+      expect(release?.rolloutPercentage).toBe(0);
     });
   });
 
@@ -551,7 +551,7 @@ describe("Sync handler", () => {
       await testPrisma.release.findUnique({
         where: { version_type: { version: FRESH_VERSION, type: "app" } },
       }),
-    ).toMatchObject({ rolloutPercentage: 10 });
+    ).toMatchObject({ rolloutPercentage: 0 });
     expect(
       await testPrisma.release.findUnique({
         where: { version_type: { version: OTHER_FRESH_VERSION, type: "app" } },

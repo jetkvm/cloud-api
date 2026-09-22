@@ -392,6 +392,21 @@ describe("Retrieve handler", () => {
       });
     });
 
+    it("keeps an in-progress rollout when a newer release is registered at 0%", async () => {
+      // early-adopter hashes to bucket 8, late-adopter to bucket 95.
+      await createDbReleasePair("2.0.0", 100);
+      await createDbReleasePair("2.1.0", 50);
+      await createDbReleasePair("2.2.0", 0);
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter" }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ appVersion: "2.1.0", systemVersion: "2.1.0" });
+
+      const outOfBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "late-adopter" }), outOfBucket);
+      expect(jsonBody(outOfBucket)).toMatchObject({ appVersion: "2.0.0", systemVersion: "2.0.0" });
+    });
+
     it("applies app and system rollout independently", async () => {
       await createDbReleasePair("2.4.0", 100);
       await createDbRelease("app", "2.5.0", 100);
@@ -607,6 +622,21 @@ describe("Retrieve handler", () => {
       await expect(
         Retrieve(createMockRequest({ deviceId: "late-adopter" }), createMockResponse()),
       ).rejects.toThrow(/No (app|system) release is rolled out yet for SKU "jetkvm-v2"/);
+    });
+
+    it("serves the first staged release for a new SKU when no 100% release ships it", async () => {
+      // The seeded 100% releases carry jetkvm-v2 only. The first SDMMC build
+      // is staged at 50%: early-adopter (bucket 8) is in, late-adopter (95) out.
+      await createDbRelease("app", "1.3.0", 50, [releaseArtifact("app", "1.3.0", SDMMC_SKU)]);
+      await createDbRelease("system", "1.3.0", 50, [releaseArtifact("system", "1.3.0", SDMMC_SKU)]);
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter", sku: SDMMC_SKU }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ appVersion: "1.3.0", systemVersion: "1.3.0" });
+
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "late-adopter", sku: SDMMC_SKU }), createMockResponse()),
+      ).rejects.toThrow(/No (app|system) release is rolled out yet for SKU "jetkvm-v2-sdmmc"/);
     });
   });
 
