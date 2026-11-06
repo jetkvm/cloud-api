@@ -5,3 +5,5 @@ dist/
 .DS_Store
 .env
 .git
+.env.*
+!.env.example
