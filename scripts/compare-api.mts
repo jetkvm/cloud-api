@@ -200,7 +200,8 @@ const query = (params: Record<string, string | undefined>) =>
  */
 async function discoverVersions(sku: string, kind: "app" | "system"): Promise<string[]> {
   const versions: string[] = [];
-  let range = ">=0.0.0";
+  // ">=0.0.0" would normalize to "*", which the API treats as not pinned
+  let range = "<999999.0.0";
   for (let i = 0; i < 200; i++) {
     const answer = await send(reference, {
       area: "releases",
@@ -244,12 +245,21 @@ async function releaseProbes(devices: string[]): Promise<Probe[]> {
     })),
   );
 
+  // A chain stops at a version with no build for its SKU, so every SKU of a
+  // release type is probed with the versions any of its SKUs found.
+  const releaseType = (sku: string, kind: string) => (MINI_SKUS.has(sku) ? "mini" : kind);
+  const versionsByType = new Map<string, Set<string>>();
+  for (const { sku, kind, versions } of discovered) {
+    const type = releaseType(sku, kind);
+    versionsByType.set(type, new Set([...(versionsByType.get(type) ?? []), ...versions]));
+  }
+
   for (const sku of skus) {
     for (const deviceId of devices) add(`stable ${sku}`, { deviceId, sku }, true);
     add(`prerelease ${sku}`, { deviceId: devices[0], sku, prerelease: "true" });
 
-    for (const { kind, versions } of discovered.filter(chain => chain.sku === sku)) {
-      for (const version of versions) {
+    for (const { kind } of chains.filter(chain => chain.sku === sku)) {
+      for (const version of versionsByType.get(releaseType(sku, kind)) ?? []) {
         add(`pinned ${kind} ${sku}`, {
           deviceId: devices[0],
           sku,
