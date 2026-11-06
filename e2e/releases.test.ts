@@ -1,12 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { DEVICE_IN_BUCKET } from "./fixtures";
 import {
   api,
   cdn,
+  db,
   expectServable,
   getRelease,
   objectBytes,
+  removeArtifact,
   setRollouts,
+  syncReleases,
+  uploadArtifact,
 } from "./helpers";
 
 // Selection rules are covered by test/releases.test.ts against a mocked S3.
@@ -118,6 +122,79 @@ describe("an update check", () => {
       systemVersion: "0.4.0-rc.1",
       systemUrl: cdn("system/0.4.0-rc.1/skus/jetkvm-v2/system.tar"),
     });
+  });
+});
+
+describe("a release from upload to full rollout", () => {
+  const keys = [
+    "app/0.4.6/skus/jetkvm-v2/jetkvm_app",
+    "app/0.4.6/skus/jetkvm-v2-sdmmc/jetkvm_app",
+  ];
+
+  afterEach(async () => {
+    await db.release.deleteMany({ where: { type: "app", version: "0.4.6" } });
+    await Promise.all(keys.map(removeArtifact));
+  });
+
+  const setApp046 = (rolloutPercentage: number) =>
+    db.release.updateMany({
+      where: { type: "app", version: "0.4.6" },
+      data: { rolloutPercentage },
+    });
+
+  it("reaches no device at 0%, the devices in the bucket while staged, and every device at 100%", async () => {
+    // app 0.5.0 stays registered at 0%: a newer unreleased version must not get in the way
+    await setRollouts({ app: { "0.4.0": 100 }, system: { "0.3.0": 100 } });
+    await Promise.all(
+      keys.map(key => uploadArtifact(key, Buffer.from(`release ${key}`))),
+    );
+    expect(
+      await (await syncReleases({ type: "app", version: "0.4.6" })).json(),
+    ).toMatchObject({
+      created: 1,
+    });
+
+    // Registered at 0%: every device keeps 0.4.0
+    for (const bucket of [0, 9, 81, 99] as const) {
+      expect((await offered(device(bucket))).appVersion).toBe("0.4.0");
+    }
+
+    await setApp046(30);
+    expect(await offered(device(9))).toMatchObject({
+      appVersion: "0.4.6",
+      appUrl: cdn(keys[0]),
+    });
+    expect(await offered(device(9, SDMMC))).toMatchObject({
+      appVersion: "0.4.6",
+      appUrl: cdn(keys[1]),
+    });
+    expect((await offered(device(81))).appVersion).toBe("0.4.0");
+    expect((await offered(device(81, SDMMC))).appVersion).toBe("0.4.0");
+
+    await setApp046(100);
+    for (const bucket of [0, 81, 99] as const) {
+      expect((await offered(device(bucket))).appVersion).toBe("0.4.6");
+      expect((await offered(device(bucket, SDMMC))).appUrl).toBe(cdn(keys[1]));
+    }
+  });
+});
+
+describe("the first staged release that has a build for a new SKU", () => {
+  // app 0.3.0 predates the SKU layout (JetKVM v2 only); 0.4.0 is the first with an SDMMC build
+  it("reaches the new SKU's devices in the bucket, and the rest get 404 until it is rolled out", async () => {
+    await setRollouts({ app: { "0.3.0": 100, "0.4.0": 30 }, system: { "0.3.0": 100 } });
+
+    expect(await offered(device(9, SDMMC))).toMatchObject({
+      appVersion: "0.4.0",
+      appUrl: cdn("app/0.4.0/skus/jetkvm-v2-sdmmc/jetkvm_app"),
+    });
+    const outside = await getRelease(device(81, SDMMC));
+    expect(outside.status).toBe(404);
+    expect(outside.body.name).toBe("NotFoundError");
+
+    // The original JetKVM is not affected
+    expect((await offered(device(9, V2))).appVersion).toBe("0.4.0");
+    expect((await offered(device(81, V2))).appUrl).toBe(cdn("app/0.3.0/jetkvm_app"));
   });
 });
 
