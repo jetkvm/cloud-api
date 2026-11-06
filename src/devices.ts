@@ -8,7 +8,7 @@ import {
   UnprocessableEntityError,
 } from "./errors";
 import * as crypto from "crypto";
-import { authenticated } from "./auth";
+import { verifySession } from "./auth";
 import { activeConnections } from "./webrtc-signaling";
 import { effectiveSku } from "./skus";
 
@@ -124,19 +124,8 @@ export const Delete = async (
     return res.status(204).send();
   }
 
-  // If the user doesn't have a secret token, we check their session cookie
-  try {
-    await new Promise<void>(resolve => {
-      authenticated(req, res, () => {
-        resolve();
-      });
-    });
-  } catch (error) {
-    throw new BadRequestError("Unauthorized");
-  }
-
-  const idToken = req.session?.id_token;
-  const { sub } = jose.decodeJwt(idToken);
+  // Without a device token, only a signed-in owner may delete the device
+  const { sub } = await verifySession(req);
   if (!sub) throw new UnauthorizedError("Missing sub in token");
 
   const { id } = req.params;

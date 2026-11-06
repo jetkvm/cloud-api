@@ -28,6 +28,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    # Pulls and starts in the background while dependencies install; the end-to-end tests use it
+    - name: Start S3-compatible store
+      run: nohup docker compose -f compose.development.yaml up -d s3 > "$RUNNER_TEMP/s3-start.log" 2>&1 &
+
     - name: Use Node.js
       uses: actions/setup-node@v4
       with:
@@ -56,6 +60,11 @@ jobs:
 
     - name: Run Tests
       run: npm test
+
+    - name: Run end-to-end tests
+      run: |
+        timeout 180 sh -c 'until curl -s -o /dev/null http://127.0.0.1:8333; do sleep 1; done' || { cat "$RUNNER_TEMP/s3-start.log"; exit 1; }
+        npx vitest run --config vitest.e2e.config.ts
 
     - name: Cache Prisma Binary
       uses: actions/cache@v4

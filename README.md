@@ -28,7 +28,7 @@ If you've found an issue and want to report it, please check our [Issues](https:
 This project is built with Node.js, Prisma, and Express.
 
 ```bash
-# Start the database
+# Start the database and the S3-compatible store the e2e tests use
 docker compose -f compose.development.yaml up -d
 
 # Copy and configure environment variables
@@ -49,6 +49,28 @@ npm run dev
 # Run tests
 npm test
 ```
+
+### End-to-end tests
+
+`npm run test:e2e` builds the API and starts it as the container does, against a
+database (`jetkvm_e2e`) and a bucket that only the e2e run uses. It needs the
+services from `compose.development.yaml`. Override them with `E2E_DATABASE_URL`
+and `E2E_S3_ENDPOINT`.
+
+### Comparing two deployments
+
+`npm run compare` sends the same requests to two deployments of the API and
+reports where the answers differ, grouped by cause:
+
+```bash
+npm run compare -- --candidate local
+npm run compare -- --candidate staging --only releases,redirects
+npm run compare -- --help
+```
+
+The reference defaults to `https://api.jetkvm.com`. Update checks that depend
+on the rollout table differ unless both databases have the same rollout
+percentages.
 
 ## Self-Hosting
 

@@ -16,7 +16,9 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
+    "compare": "node scripts/compare-api.mts"
   },
   "engines": {
     "node": ">=22.23.4 <23"
