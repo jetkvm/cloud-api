@@ -242,19 +242,18 @@ describe("a SKU missing from the newest upload", () => {
     });
   });
 
-  it.each([
-    [
-      "/releases/app/latest?sku=jetkvm-v2-sdmmc",
-      "app/0.4.0/skus/jetkvm-v2-sdmmc/jetkvm_app",
-    ],
-    [
+  it("does not hide the newest version that has it from the recovery image redirect", async () => {
+    const response = await api(
       "/releases/system_recovery/latest?sku=jetkvm-mini-wireless",
-      "mini/0.5.3/skus/jetkvm-mini-wireless/jetkvm-mini-full.bin",
-    ],
-  ])("does not hide the newest version that has it from %s", async (path, key) => {
-    const response = await api(path);
+    );
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe(cdn(key));
+    expect(response.headers.get("location")).toBe(
+      cdn("mini/0.5.3/skus/jetkvm-mini-wireless/jetkvm-mini-full.bin"),
+    );
+  });
+
+  it("makes the build-tooling app redirect answer 404, not an older app", async () => {
+    expect((await api("/releases/app/latest?sku=jetkvm-v2-sdmmc")).status).toBe(404);
   });
 });
 

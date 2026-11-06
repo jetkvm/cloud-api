@@ -247,13 +247,14 @@ const MAX_FALLBACK_VERSIONS = 5;
  * has the artifact for the SKU, and that artifact's path. A version without a
  * build for the SKU is skipped, as the stable path skips releases without a
  * compatible artifact, so a SKU missing from one upload does not hide older ones.
- * Only the newest MAX_FALLBACK_VERSIONS matching versions are checked.
+ * Only the newest `maxVersions` matching versions are checked.
  */
 async function newestVersionWithArtifact(
   { prefix, file }: Artifact,
   sku: string,
   range: string,
   includePrerelease: boolean,
+  maxVersions = MAX_FALLBACK_VERSIONS,
 ): Promise<{ version: string; path: string }> {
   const response = await s3Client.send(
     new ListObjectsV2Command({ Bucket: bucketName, Prefix: `${prefix}/`, Delimiter: "/" }),
@@ -276,7 +277,7 @@ async function newestVersionWithArtifact(
   // Each version costs one or two S3 calls and a miss is not cached, so the
   // walk is short: a version without the SKU's build is an upload mistake,
   // not something that runs for many versions.
-  for (const version of candidates.slice(0, MAX_FALLBACK_VERSIONS)) {
+  for (const version of candidates.slice(0, maxVersions)) {
     try {
       return { version, path: await resolveArtifactPath(prefix, version, sku, file) };
     } catch (error) {
@@ -645,7 +646,9 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
  * object only has to exist. The product table
  * says which prefix holds it, so the same URL serves every product. Used by
  * build tooling (rv1106-system pulls the app binary into the system image)
- * and by flashing scripts.
+ * and by flashing scripts. Only the newest version counts: if it has no build
+ * for the SKU, the answer is 404, so a build fails instead of silently
+ * packaging an older one.
  */
 function latestArtifactRedirect(kind: OtaKind) {
   return cachedRedirect(
@@ -656,7 +659,13 @@ function latestArtifactRedirect(kind: OtaKind) {
         throw new BadRequestError(`SKU "${query.sku}" has no ${kind} artifact`);
       }
 
-      const { path } = await newestVersionWithArtifact(artifact, query.sku, "*", query.prerelease);
+      const { path } = await newestVersionWithArtifact(
+        artifact,
+        query.sku,
+        "*",
+        query.prerelease,
+        1,
+      );
       return `${baseUrl}/${path}`;
     },
   );
