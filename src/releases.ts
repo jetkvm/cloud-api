@@ -239,11 +239,15 @@ async function enrichWithSigUrls(release: Release, sku: string): Promise<void> {
   );
 }
 
+/** Versions checked, newest first, before newestVersionWithArtifact gives up. */
+const MAX_FALLBACK_VERSIONS = 5;
+
 /**
  * The newest version under the artifact's prefix that satisfies the range and
  * has the artifact for the SKU, and that artifact's path. A version without a
  * build for the SKU is skipped, as the stable path skips releases without a
  * compatible artifact, so a SKU missing from one upload does not hide older ones.
+ * Only the newest MAX_FALLBACK_VERSIONS matching versions are checked.
  */
 async function newestVersionWithArtifact(
   { prefix, file }: Artifact,
@@ -269,7 +273,10 @@ async function newestVersionWithArtifact(
     throw new NotFoundError(`No version found under prefix ${prefix} that satisfies ${range}`);
   }
 
-  for (const version of candidates) {
+  // Each version costs one or two S3 calls and a miss is not cached, so the
+  // walk is short: a version without the SKU's build is an upload mistake,
+  // not something that runs for many versions.
+  for (const version of candidates.slice(0, MAX_FALLBACK_VERSIONS)) {
     try {
       return { version, path: await resolveArtifactPath(prefix, version, sku, file) };
     } catch (error) {

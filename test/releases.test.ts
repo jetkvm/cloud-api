@@ -924,6 +924,23 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
     clearCaches();
   });
 
+  it("checks only the five newest versions for a SKU that none of them ships", async () => {
+    // 20 versions with a skus/ folder; only the oldest, 1.0.0, has an SDMMC build
+    const versions = Array.from({ length: 20 }, (_, i) => `1.${i}.0`);
+    mockS3ListVersions("app", versions);
+    s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
+    s3Mock.on(HeadObjectCommand).rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+    s3Mock
+      .on(HeadObjectCommand, { Key: "app/1.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app" })
+      .resolves({});
+
+    await expect(
+      RetrieveLatestApp(createMockRequest({ sku: "jetkvm-v2-sdmmc" }), createMockResponse()),
+    ).rejects.toThrow(NotFoundError);
+    // One version listing, then one skus/ check per version for the newest five
+    expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1 + 5);
+  });
+
   it("should handle all invalid semver versions gracefully", async () => {
     const req = createMockRequest({});
     const res = createMockResponse();
