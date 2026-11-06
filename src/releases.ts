@@ -622,7 +622,8 @@ function releaseCacheKey(prefix: string, query: LatestQuery): string {
 /**
  * 302 to the newest recovery image for the requested SKU. The product table
  * says which prefix holds it and what it is called. The route keeps its
- * historical name.
+ * historical name. Only the newest version counts: if it has no image for the
+ * SKU, the answer is 404 rather than an older image.
  */
 export const RetrieveLatestSystemRecovery = cachedRedirect(
   query => releaseCacheKey("recovery", query),
@@ -634,7 +635,13 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       );
     }
 
-    const { path } = await newestVersionWithArtifact(recovery, query.sku, "*", query.prerelease);
+    const { path } = await newestVersionWithArtifact(
+      recovery,
+      query.sku,
+      "*",
+      query.prerelease,
+      1,
+    );
     return `${baseUrl}/${path}`;
   },
 );

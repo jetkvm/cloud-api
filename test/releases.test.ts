@@ -325,6 +325,34 @@ describe("Retrieve handler", () => {
   });
 
   describe("prerelease mode", () => {
+    it("checks only the five newest versions for a SKU that none of them ships", async () => {
+      // Defaults first: a later mock for the same command takes precedence.
+      s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
+      s3Mock
+        .on(HeadObjectCommand)
+        .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      // 20 app versions with a skus/ folder; only the oldest, 1.0.0, has an SDMMC build.
+      // The system part has a valid SDMMC build, so only the app part fails.
+      mockS3ListVersions("app", Array.from({ length: 20 }, (_, i) => `1.${i}.0`));
+      mockS3ListVersions("system", ["1.0.0"]);
+      mockS3SkuVersion("system", "1.0.0", "jetkvm-v2-sdmmc", "system-hash");
+      s3Mock
+        .on(HeadObjectCommand, { Key: "app/1.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app" })
+        .resolves({});
+
+      await expect(
+        Retrieve(
+          createMockRequest({ deviceId: "device-123", prerelease: "true", sku: "jetkvm-v2-sdmmc" }),
+          createMockResponse(),
+        ),
+      ).rejects.toThrow(NotFoundError);
+      // One app version listing, then one skus/ check per version for the newest five
+      const appListings = s3Mock
+        .commandCalls(ListObjectsV2Command)
+        .filter(call => call.args[0].input.Prefix?.startsWith("app/"));
+      expect(appListings).toHaveLength(1 + 5);
+    });
+
     it("should return latest prerelease version when prerelease=true", async () => {
       const req = createMockRequest({ deviceId: "device-123", prerelease: "true" });
       const res = createMockResponse();
@@ -1284,10 +1312,9 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
     clearCaches();
   });
 
-  it("checks only the five newest versions for a SKU that none of them ships", async () => {
-    // 20 versions with a skus/ folder; only the oldest, 1.0.0, has an SDMMC image
-    const versions = Array.from({ length: 20 }, (_, i) => `1.${i}.0`);
-    mockS3ListVersions("system", versions);
+  it("answers 404, without an older image, when the newest version has no image for the SKU", async () => {
+    // 1.1.0 ships only JetKVM v2; 1.0.0 also has an SDMMC image
+    mockS3ListVersions("system", ["1.0.0", "1.1.0"]);
     s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
     s3Mock.on(HeadObjectCommand).rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
     s3Mock
@@ -1300,8 +1327,6 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
         createMockResponse(),
       ),
     ).rejects.toThrow(NotFoundError);
-    // One version listing, then one skus/ check per version for the newest five
-    expect(s3Mock.commandCalls(ListObjectsV2Command)).toHaveLength(1 + 5);
   });
 
   it("should handle all invalid semver versions gracefully", async () => {
