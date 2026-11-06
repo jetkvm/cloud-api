@@ -73,6 +73,12 @@ The reference defaults to `https://api.jetkvm.com`. Update checks that depend
 on the rollout table differ unless both databases have the same rollout
 percentages.
 
+### Releases
+
+- Pull requests merge into `dev` with a squash merge. `dev` deploys to staging.
+- A release is a pull request from `dev` to `main`, merged with a merge commit, not a squash merge, so `main` keeps the history of `dev`. `main` deploys to production.
+- Deploys do not run database migrations. Before merging a change that adds one, run `npx prisma migrate deploy` against the database. The running code must work with the migrated schema.
+
 ## Self-Hosting
 
 For self-hosting, use the default compose file which runs the complete stack:
