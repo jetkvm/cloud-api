@@ -23,7 +23,7 @@ model User {
 }
 
 model Device {
-  id                 String    @unique
+  id                 String    @id
   lastSeen           DateTime? @db.Timestamp(6)
   name               String?
   user               User      @relation(fields: [userId], references: [id])
