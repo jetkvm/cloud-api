@@ -33,10 +33,13 @@ export const iceServers = toICEServers(
 );
 
 // Helper function to update device last seen timestamp
+// Runs from socket event handlers, where a rejection would be unhandled
 async function updateDeviceLastSeen(id: string) {
-  const device = await prisma.device.findUnique({ where: { id } });
-  if (device) {
-    return prisma.device.update({ where: { id }, data: { lastSeen: new Date() } });
+  try {
+    // updateMany: the device may have been deleted while it disconnected
+    await prisma.device.updateMany({ where: { id }, data: { lastSeen: new Date() } });
+  } catch (error) {
+    console.error(`[Device] Could not record last seen for ${id}:`, error);
   }
 }
 
@@ -48,18 +51,24 @@ export function registerWebSocketRouter(
   server: Server<typeof IncomingMessage, typeof ServerResponse>,
 ) {
   server.on("upgrade", async (req: IncomingMessage, socket: Socket, head: Buffer) => {
-    const url = new URL(req.url || "", "http://localhost"); // We don't care about the hostname, we're just using the path to route
-    const path = url.pathname;
+    // An event listener: nothing awaits it, so it must not reject
+    try {
+      const url = new URL(req.url || "", "http://localhost"); // We don't care about the hostname, we're just using the path to route
+      const path = url.pathname;
 
-    // Route to appropriate handler based on path
-    // This path should be something like /webrtc/signaling/device, but due to legacy reasons we have to use `/` for device ws regitstrations
-    if (path === "/") {
-      await handleDeviceSocketRequest(req, socket, head);
-    } else if (path === "/webrtc/signaling/client") {
-      await handleClientSocketRequest(req, socket, head);
-    } else {
-      console.log(`[Webrtc] Unrecognized path: ${path}`);
-      return socket.destroy();
+      // Route to appropriate handler based on path
+      // This path should be something like /webrtc/signaling/device, but due to legacy reasons we have to use `/` for device ws regitstrations
+      if (path === "/") {
+        await handleDeviceSocketRequest(req, socket, head);
+      } else if (path === "/webrtc/signaling/client") {
+        await handleClientSocketRequest(req, socket, head);
+      } else {
+        console.log(`[Webrtc] Unrecognized path: ${path}`);
+        socket.destroy();
+      }
+    } catch (error) {
+      console.error("[Webrtc] Error handling upgrade request:", error);
+      socket.destroy();
     }
   });
 }
@@ -74,50 +83,45 @@ async function handleDeviceSocketRequest(
   socket: Socket,
   head: Buffer,
 ) {
-  try {
-    // Authenticate device
-    const device = await authenticateDeviceRequest(req);
-    if (!device) {
-      return socket.destroy();
-    }
-
-    // Inflight means that the device has connected, a client has connected to that device via HTTP, and they're now doing the signaling dance
-    if (inFlight.has(device.id)) {
-      console.log(
-        `[Device] Device ${device.id} already has an inflight client connection.`,
-      );
-      return socket.destroy();
-    }
-
-    // Handle existing connections for this device
-    if (activeConnections.has(device.id)) {
-      console.log(
-        `[Device] Device ${device.id} already connected. Terminating existing connection.`,
-      );
-
-      const existingDeviceWs = activeConnections.get(device.id)!.ws;
-      await new Promise(resolve => {
-        console.log("[Device] Waiting for existing connection to close...");
-        existingDeviceWs.on("close", () => {
-          activeConnections.delete(device.id);
-          console.log("[Device] Existing connection closed.");
-
-          // Now we continue with the new connection
-          resolve(true);
-        });
-
-        existingDeviceWs.terminate();
-      });
-    }
-
-    // Complete the WebSocket upgrade
-    wssDevice.handleUpgrade(req, socket, head, ws => {
-      setupDeviceWebSocket(ws, device, req);
-    });
-  } catch (error) {
-    console.error("Error handling device socket request:", error);
-    socket.destroy();
+  // Authenticate device
+  const device = await authenticateDeviceRequest(req);
+  if (!device) {
+    return socket.destroy();
   }
+
+  // Inflight means that the device has connected, a client has connected to that device via HTTP, and they're now doing the signaling dance
+  if (inFlight.has(device.id)) {
+    console.log(
+      `[Device] Device ${device.id} already has an inflight client connection.`,
+    );
+    return socket.destroy();
+  }
+
+  // Handle existing connections for this device
+  if (activeConnections.has(device.id)) {
+    console.log(
+      `[Device] Device ${device.id} already connected. Terminating existing connection.`,
+    );
+
+    const existingDeviceWs = activeConnections.get(device.id)!.ws;
+    await new Promise(resolve => {
+      console.log("[Device] Waiting for existing connection to close...");
+      existingDeviceWs.on("close", () => {
+        activeConnections.delete(device.id);
+        console.log("[Device] Existing connection closed.");
+
+        // Now we continue with the new connection
+        resolve(true);
+      });
+
+      existingDeviceWs.terminate();
+    });
+  }
+
+  // Complete the WebSocket upgrade
+  wssDevice.handleUpgrade(req, socket, head, ws => {
+    setupDeviceWebSocket(ws, device, req);
+  });
 }
 
 // Authenticate the device connection
@@ -190,10 +194,9 @@ function setupDeviceWebSocket(deviceWs: WebSocket, device: Device, req: Incoming
     // We check for aliveness every 10s
   }, 10000);
 
-  // Handle errors and connection close
-  deviceWs.on("error", async error => {
+  // Handle errors and connection close. ws emits "close" after "error", so cleanup runs once, there.
+  deviceWs.on("error", error => {
     console.log(`[Device] Error for ${id}:`, error);
-    await cleanup();
   });
 
   deviceWs.on("close", async (code, reason) => {

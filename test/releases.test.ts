@@ -80,7 +80,8 @@ function mockS3HashFile(
     Contents: [],
   });
 
-  // Mock legacy hash path
+  // The legacy artifact and its hash
+  s3Mock.on(HeadObjectCommand, { Key: artifactPath }).resolves({});
   s3Mock.on(GetObjectCommand, { Key: `${artifactPath}.sha256` }).resolves({
     Body: createAsyncIterable(hash) as any,
   });
@@ -324,6 +325,34 @@ describe("Retrieve handler", () => {
   });
 
   describe("prerelease mode", () => {
+    it("checks only the five newest versions for a SKU that none of them ships", async () => {
+      // Defaults first: a later mock for the same command takes precedence.
+      s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
+      s3Mock
+        .on(HeadObjectCommand)
+        .rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+      // 20 app versions with a skus/ folder; only the oldest, 1.0.0, has an SDMMC build.
+      // The system part has a valid SDMMC build, so only the app part fails.
+      mockS3ListVersions("app", Array.from({ length: 20 }, (_, i) => `1.${i}.0`));
+      mockS3ListVersions("system", ["1.0.0"]);
+      mockS3SkuVersion("system", "1.0.0", "jetkvm-v2-sdmmc", "system-hash");
+      s3Mock
+        .on(HeadObjectCommand, { Key: "app/1.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app" })
+        .resolves({});
+
+      await expect(
+        Retrieve(
+          createMockRequest({ deviceId: "device-123", prerelease: "true", sku: "jetkvm-v2-sdmmc" }),
+          createMockResponse(),
+        ),
+      ).rejects.toThrow(NotFoundError);
+      // One app version listing, then one skus/ check per version for the newest five
+      const appListings = s3Mock
+        .commandCalls(ListObjectsV2Command)
+        .filter(call => call.args[0].input.Prefix?.startsWith("app/"));
+      expect(appListings).toHaveLength(1 + 5);
+    });
+
     it("should return latest prerelease version when prerelease=true", async () => {
       const req = createMockRequest({ deviceId: "device-123", prerelease: "true" });
       const res = createMockResponse();
@@ -392,6 +421,21 @@ describe("Retrieve handler", () => {
       });
     });
 
+    it("keeps an in-progress rollout when a newer release is registered at 0%", async () => {
+      // early-adopter hashes to bucket 8, late-adopter to bucket 95.
+      await createDbReleasePair("2.0.0", 100);
+      await createDbReleasePair("2.1.0", 50);
+      await createDbReleasePair("2.2.0", 0);
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter" }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ appVersion: "2.1.0", systemVersion: "2.1.0" });
+
+      const outOfBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "late-adopter" }), outOfBucket);
+      expect(jsonBody(outOfBucket)).toMatchObject({ appVersion: "2.0.0", systemVersion: "2.0.0" });
+    });
+
     it("applies app and system rollout independently", async () => {
       await createDbReleasePair("2.4.0", 100);
       await createDbRelease("app", "2.5.0", 100);
@@ -438,6 +482,16 @@ describe("Retrieve handler", () => {
         systemHash: "system-3.0.0-jetkvm-v2-hash",
         systemSigUrl: `${artifactUrl("system", "3.0.0")}.sig`,
       });
+    });
+
+    it("pins only the requested part; the other follows the rollout", async () => {
+      await createDbReleasePair("3.0.0", 100);
+      await createDbReleasePair("3.1.0", 0);
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "pinned-device", appVersion: "3.1.0" }), res);
+
+      expect(jsonBody(res)).toMatchObject({ appVersion: "3.1.0", systemVersion: "3.0.0" });
     });
 
     it("omits DB-backed stable sigUrl fields when sibling .sig objects are absent", async () => {
@@ -607,6 +661,21 @@ describe("Retrieve handler", () => {
       await expect(
         Retrieve(createMockRequest({ deviceId: "late-adopter" }), createMockResponse()),
       ).rejects.toThrow(/No (app|system) release is rolled out yet for SKU "jetkvm-v2"/);
+    });
+
+    it("serves the first staged release for a new SKU when no 100% release ships it", async () => {
+      // The seeded 100% releases carry jetkvm-v2 only. The first SDMMC build
+      // is staged at 50%: early-adopter (bucket 8) is in, late-adopter (95) out.
+      await createDbRelease("app", "1.3.0", 50, [releaseArtifact("app", "1.3.0", SDMMC_SKU)]);
+      await createDbRelease("system", "1.3.0", 50, [releaseArtifact("system", "1.3.0", SDMMC_SKU)]);
+
+      const inBucket = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "early-adopter", sku: SDMMC_SKU }), inBucket);
+      expect(jsonBody(inBucket)).toMatchObject({ appVersion: "1.3.0", systemVersion: "1.3.0" });
+
+      await expect(
+        Retrieve(createMockRequest({ deviceId: "late-adopter", sku: SDMMC_SKU }), createMockResponse()),
+      ).rejects.toThrow(/No (app|system) release is rolled out yet for SKU "jetkvm-v2-sdmmc"/);
     });
   });
 
@@ -881,6 +950,20 @@ describe("RetrieveLatestApp S3 redirect handler", () => {
   beforeEach(() => {
     s3Mock.reset();
     clearCaches();
+  });
+
+  it("answers 404, without an older build, when the newest version has no build for the SKU", async () => {
+    // 1.1.0 ships only JetKVM v2; 1.0.0 also has an SDMMC build
+    mockS3ListVersions("app", ["1.0.0", "1.1.0"]);
+    s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
+    s3Mock.on(HeadObjectCommand).rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+    s3Mock
+      .on(HeadObjectCommand, { Key: "app/1.0.0/skus/jetkvm-v2-sdmmc/jetkvm_app" })
+      .resolves({});
+
+    await expect(
+      RetrieveLatestApp(createMockRequest({ sku: "jetkvm-v2-sdmmc" }), createMockResponse()),
+    ).rejects.toThrow(NotFoundError);
   });
 
   it("should handle all invalid semver versions gracefully", async () => {
@@ -1227,6 +1310,23 @@ describe("RetrieveLatestSystemRecovery S3 redirect handler", () => {
   beforeEach(() => {
     s3Mock.reset();
     clearCaches();
+  });
+
+  it("answers 404, without an older image, when the newest version has no image for the SKU", async () => {
+    // 1.1.0 ships only JetKVM v2; 1.0.0 also has an SDMMC image
+    mockS3ListVersions("system", ["1.0.0", "1.1.0"]);
+    s3Mock.on(ListObjectsV2Command, { MaxKeys: 1 }).resolves({ Contents: [{ Key: "x" }] });
+    s3Mock.on(HeadObjectCommand).rejects({ name: "NotFound", $metadata: { httpStatusCode: 404 } });
+    s3Mock
+      .on(HeadObjectCommand, { Key: "system/1.0.0/skus/jetkvm-v2-sdmmc/update_sd.img.zip" })
+      .resolves({});
+
+    await expect(
+      RetrieveLatestSystemRecovery(
+        createMockRequest({ sku: "jetkvm-v2-sdmmc" }),
+        createMockResponse(),
+      ),
+    ).rejects.toThrow(NotFoundError);
   });
 
   it("should handle all invalid semver versions gracefully", async () => {

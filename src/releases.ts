@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import type { Prisma } from "@prisma/client";
 import { prisma } from "./db";
 import { BadRequestError, ConflictError, InternalServerError, NotFoundError } from "./errors";
 import type { ReleaseSyncRunner } from "./release-sync";
@@ -146,7 +147,7 @@ const objectExists = (key: string) => s3ObjectExists(s3Client, bucketName, key);
  *   - Fails if the requested SKU is not available
  *
  * For legacy versions (no skus/ folder):
- *   - Returns legacy path for SKUs that predate the SKU layout
+ *   - Returns legacy path for SKUs that predate the SKU layout, if the file exists
  *   - Fails for every other SKU because legacy firmware predates
  *     that hardware and may not be compatible
  *
@@ -176,8 +177,9 @@ async function resolveArtifactPath(
   // For legacy versions (pre-SKU folder structure), we only serve the SKUs
   // that predate the layout. This prevents newer hardware variants from
   // rolling back to old firmware that may not have compatible binaries.
-  if (legacyCompatibleSkus(prefix).includes(sku)) {
-    return `${prefix}/${version}/${file}`;
+  const legacyPath = `${prefix}/${version}/${file}`;
+  if (legacyCompatibleSkus(prefix).includes(sku) && (await objectExists(legacyPath))) {
+    return legacyPath;
   }
 
   throw noArtifactForSku(version, sku);
@@ -237,66 +239,77 @@ async function enrichWithSigUrls(release: Release, sku: string): Promise<void> {
   );
 }
 
+/** Versions checked, newest first, before newestVersionWithArtifact gives up. */
+const MAX_FALLBACK_VERSIONS = 5;
+
+/**
+ * The newest version under the artifact's prefix that satisfies the range and
+ * has the artifact for the SKU, and that artifact's path. A version without a
+ * build for the SKU is skipped, as the stable path skips releases without a
+ * compatible artifact, so a SKU missing from one upload does not hide older ones.
+ * Only the newest `maxVersions` matching versions are checked.
+ */
+async function newestVersionWithArtifact(
+  { prefix, file }: Artifact,
+  sku: string,
+  range: string,
+  includePrerelease: boolean,
+  maxVersions = MAX_FALLBACK_VERSIONS,
+): Promise<{ version: string; path: string }> {
+  const response = await s3Client.send(
+    new ListObjectsV2Command({ Bucket: bucketName, Prefix: `${prefix}/`, Delimiter: "/" }),
+  );
+
+  const versions = (response.CommonPrefixes ?? [])
+    .map(cp => cp.Prefix!.split("/")[1])
+    .filter(v => v && semver.valid(v));
+  if (versions.length === 0) {
+    throw new NotFoundError(`No versions found under prefix ${prefix}`);
+  }
+
+  const candidates = semver.rsort(
+    versions.filter(v => semver.satisfies(v, range, { includePrerelease })),
+  );
+  if (candidates.length === 0) {
+    throw new NotFoundError(`No version found under prefix ${prefix} that satisfies ${range}`);
+  }
+
+  // Each version costs one or two S3 calls and a miss is not cached, so the
+  // walk is short: a version without the SKU's build is an upload mistake,
+  // not something that runs for many versions.
+  for (const version of candidates.slice(0, maxVersions)) {
+    try {
+      return { version, path: await resolveArtifactPath(prefix, version, sku, file) };
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+    }
+  }
+  throw noArtifactForSku(candidates[0], sku);
+}
+
 async function getLatestVersion(
   artifact: Artifact,
   includePrerelease: boolean,
   maxSatisfying: string = "*",
   sku: string,
 ): Promise<ReleaseMetadata> {
-  const { prefix } = artifact;
-  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
+  const cacheKey = `${artifact.prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
   const cached = releaseCache.get(cacheKey);
   if (cached) return cached;
 
-  const listCommand = new ListObjectsV2Command({
-    Bucket: bucketName,
-    Prefix: prefix + "/",
-    Delimiter: "/",
-  });
-
-  const response = await s3Client.send(listCommand);
-
-  if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-    throw new NotFoundError(`No versions found under prefix ${prefix}`);
-  }
-
-  // Extract version folder names
-  let versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
-    .filter(Boolean)
-    .filter(v => semver.valid(v));
-
-  if (versions.length === 0) {
-    throw new NotFoundError(`No valid versions found under prefix ${prefix}`);
-  }
-
-  // Get the latest version, optionally including prerelease versions
-  const latestVersion = semver.maxSatisfying(versions, maxSatisfying, {
+  const { version, path } = await newestVersionWithArtifact(
+    artifact,
+    sku,
+    maxSatisfying,
     includePrerelease,
-  }) as string;
-  if (!latestVersion) {
-    throw new NotFoundError(
-      `No version found under prefix ${prefix} that satisfies ${maxSatisfying}`,
-    );
-  }
-
-  const selectedPath = await resolveArtifactPath(prefix, latestVersion, sku, artifact.file);
-  const url = `${baseUrl}/${selectedPath}`;
-
-  const hashResponse = await s3Client.send(
-    new GetObjectCommand({
-      Bucket: bucketName,
-      Key: `${selectedPath}.sha256`,
-    }),
   );
 
+  const hashResponse = await s3Client.send(
+    new GetObjectCommand({ Bucket: bucketName, Key: `${path}.sha256` }),
+  );
   const hash = await streamToString(hashResponse.Body);
 
-  // Cache the release metadata
-  const release: ReleaseMetadata = {
-    version: latestVersion,
-    url,
-    hash,
-  };
+  const release: ReleaseMetadata = { version, url: `${baseUrl}/${path}`, hash };
   releaseCache.set(cacheKey, release);
   return release;
 }
@@ -428,8 +441,10 @@ function dbReleaseToMetadata(release: DbRelease, sku: string): ReleaseMetadata {
 }
 
 /**
- * Newest fully rolled out release for the prefix, or null when no release
- * has reached 100% yet (a prefix whose first release is still staged).
+ * Newest fully rolled out release that ships a binary for the SKU, or null
+ * when there is none: the prefix's first release is still staged, or the SKU
+ * is new and its first build has not reached 100% yet. The caller decides
+ * whether the device is in the staged release's bucket before it needs this.
  */
 async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease | null> {
   const rolledOutReleases = await prisma.release.findMany({
@@ -447,9 +462,7 @@ async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease
   const compatibleReleases = rolledOutReleases.filter(r => r.artifacts.length > 0);
 
   if (compatibleReleases.length === 0) {
-    throw new NotFoundError(
-      `No default ${prefix} release available for SKU "${sku}"`,
-    );
+    return null;
   }
 
   const latestVersion = semver.maxSatisfying(
@@ -468,17 +481,22 @@ async function getDefaultRelease(prefix: string, sku: string): Promise<DbRelease
   return latestDefaultRelease;
 }
 
+/**
+ * Newest release that is rolling out at all. A row at 0% is registered but
+ * not yet released, so it must not displace an older release mid-rollout.
+ */
 async function getLatestRelease(prefix: string, sku: string): Promise<DbRelease> {
-  return getReleaseByRange(prefix, sku, "*");
+  return getReleaseByRange(prefix, sku, "*", { rolloutPercentage: { gt: 0 } });
 }
 
 async function getReleaseByRange(
   prefix: string,
   sku: string,
   range: string,
+  where: Prisma.ReleaseWhereInput = {},
 ): Promise<DbRelease> {
   const releases = await prisma.release.findMany({
-    where: { type: prefix },
+    where: { type: prefix, ...where },
     select: compatibleReleaseSelect(sku),
   });
 
@@ -503,6 +521,34 @@ async function getReleaseByRange(
   return latestRelease;
 }
 
+/**
+ * The release a background update check offers: the newest release that is
+ * rolling out, if the device is in its bucket and it has a build for the SKU,
+ * else the default (the newest 100% release with a build for the SKU). A
+ * staged release without a build for the SKU (e.g. a SKU-specific build has
+ * not shipped yet) keeps the default rather than 404 the whole request.
+ */
+async function rolledOutRelease(
+  prefix: string,
+  sku: string,
+  deviceId: string,
+): Promise<ReleaseMetadata> {
+  // Sequential on purpose: when the prefix has no releases at all, the 404
+  // from the latest lookup must win over the 500 from the default lookup.
+  const latest = await getLatestRelease(prefix, sku);
+  const fallback = await getDefaultRelease(prefix, sku);
+
+  const useLatest =
+    latest.artifacts.length > 0 &&
+    (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
+
+  const chosen = useLatest ? latest : fallback;
+  if (!chosen) {
+    throw new NotFoundError(`No ${prefix} release is rolled out yet for SKU "${sku}"`);
+  }
+  return dbReleaseToMetadata(chosen, sku);
+}
+
 export async function Retrieve(req: Request, res: Response) {
   const query = parseQuery(retrieveQuerySchema, req);
   const { sku, deviceId } = query;
@@ -512,7 +558,6 @@ export async function Retrieve(req: Request, res: Response) {
     app: toSemverRange(query.appVersion),
     system: toSemverRange(query.systemVersion),
   };
-  const skipRollout = artifacts.some(({ kind }) => constraints[kind] !== "*");
 
   // Prereleases are not imported into the DB by the stable sync script.
   if (query.prerelease) {
@@ -531,45 +576,17 @@ export async function Retrieve(req: Request, res: Response) {
     return res.json(remoteRelease);
   }
 
-  // Version-constrained stable requests skip rollout but still read DB metadata.
-  if (skipRollout) {
-    const constrained: OtaReleases = {};
-    for (const { kind, prefix } of artifacts) {
-      constrained[kind] = dbReleaseToMetadata(
-        await getReleaseByRange(prefix, sku, constraints[kind]),
-        sku,
-      );
-    }
-    const responseJson = toRelease(constrained);
-    await addStableSigUrls(responseJson);
-    return res.json(responseJson);
-  }
-
-  // Background update checks follow rollout percentages so new releases roll
-  // out gradually. Devices outside the bucket fall back to the default (the
-  // newest 100%-rolled-out release). If the latest release lacks a compatible
-  // artifact for this SKU (e.g. a SKU-specific build hasn't shipped yet) we
-  // silently keep the default rather than 404 the whole request.
+  // A pinned part (appVersion, systemVersion) gets the newest release in its
+  // range, rolled out or not. Every other part follows the rollout, as a
+  // background update check does, so pinning one part never offers an
+  // unreleased build of the other.
   const offered: OtaReleases = {};
   await Promise.all(
     artifacts.map(async ({ kind, prefix }) => {
-      // Sequential on purpose: when the prefix has no releases at all, the
-      // 404 from the latest lookup must win over the 500 from the default
-      // lookup, which the parallel form left to query timing.
-      const latest = await getLatestRelease(prefix, sku);
-      const fallback = await getDefaultRelease(prefix, sku);
-
-      const useLatest =
-        latest.artifacts.length > 0 &&
-        (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
-
-      const chosen = useLatest ? latest : fallback;
-      if (!chosen) {
-        throw new NotFoundError(
-          `No ${prefix} release is rolled out yet for SKU "${sku}"`,
-        );
-      }
-      offered[kind] = dbReleaseToMetadata(chosen, sku);
+      offered[kind] =
+        constraints[kind] === "*"
+          ? await rolledOutRelease(prefix, sku, deviceId)
+          : dbReleaseToMetadata(await getReleaseByRange(prefix, sku, constraints[kind]), sku);
     }),
   );
 
@@ -605,7 +622,8 @@ function releaseCacheKey(prefix: string, query: LatestQuery): string {
 /**
  * 302 to the newest recovery image for the requested SKU. The product table
  * says which prefix holds it and what it is called. The route keeps its
- * historical name.
+ * historical name. Only the newest version counts: if it has no image for the
+ * SKU, the answer is 404 rather than an older image.
  */
 export const RetrieveLatestSystemRecovery = cachedRedirect(
   query => releaseCacheKey("recovery", query),
@@ -617,43 +635,14 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       );
     }
 
-    const listCommand = new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${recovery.prefix}/`,
-      Delimiter: "/",
-    });
-    const response = await s3Client.send(listCommand);
-
-    // Extract version folder names
-    if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-      throw new NotFoundError(`No versions found under prefix ${recovery.prefix} for recovery`);
-    }
-
-    // Get the latest version
-    const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
-      .filter(Boolean)
-      .filter(v => semver.valid(v));
-
-    const latestVersion = semver.maxSatisfying(versions, "*", {
-      includePrerelease: query.prerelease,
-    }) as string;
-
-    if (!latestVersion) {
-      throw new NotFoundError(`No valid ${recovery.prefix} recovery versions found`);
-    }
-
-    const artifactPath = await resolveArtifactPath(
-      recovery.prefix,
-      latestVersion,
+    const { path } = await newestVersionWithArtifact(
+      recovery,
       query.sku,
-      recovery.file,
+      "*",
+      query.prerelease,
+      1,
     );
-
-    if (!(await objectExists(artifactPath))) {
-      throw new NotFoundError(`Recovery image not found for version ${latestVersion}`);
-    }
-
-    return `${baseUrl}/${artifactPath}`;
+    return `${baseUrl}/${path}`;
   },
 );
 
@@ -664,7 +653,9 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
  * object only has to exist. The product table
  * says which prefix holds it, so the same URL serves every product. Used by
  * build tooling (rv1106-system pulls the app binary into the system image)
- * and by flashing scripts.
+ * and by flashing scripts. Only the newest version counts: if it has no build
+ * for the SKU, the answer is 404, so a build fails instead of silently
+ * packaging an older one.
  */
 function latestArtifactRedirect(kind: OtaKind) {
   return cachedRedirect(
@@ -674,43 +665,15 @@ function latestArtifactRedirect(kind: OtaKind) {
       if (!artifact) {
         throw new BadRequestError(`SKU "${query.sku}" has no ${kind} artifact`);
       }
-      const { prefix } = artifact;
 
-      const listCommand = new ListObjectsV2Command({
-        Bucket: bucketName,
-        Prefix: `${prefix}/`,
-        Delimiter: "/",
-      });
-      const response = await s3Client.send(listCommand);
-
-      if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-        throw new NotFoundError(`No ${prefix} versions found`);
-      }
-
-      const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(
-        v => semver.valid(v),
-      );
-
-      const latestVersion = semver.maxSatisfying(versions, "*", {
-        includePrerelease: query.prerelease,
-      }) as string;
-
-      if (!latestVersion) {
-        throw new NotFoundError(`No valid ${prefix} versions found`);
-      }
-
-      const artifactPath = await resolveArtifactPath(
-        prefix,
-        latestVersion,
+      const { path } = await newestVersionWithArtifact(
+        artifact,
         query.sku,
-        artifact.file,
+        "*",
+        query.prerelease,
+        1,
       );
-
-      if (!(await objectExists(artifactPath))) {
-        throw new NotFoundError(`${prefix} artifact not found for version ${latestVersion}`);
-      }
-
-      return `${baseUrl}/${artifactPath}`;
+      return `${baseUrl}/${path}`;
     },
   );
 }
