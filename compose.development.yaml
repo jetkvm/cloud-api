@@ -19,6 +19,14 @@ services:
     volumes:
       - postgresql:/var/lib/postgresql
 
+  # S3-compatible store for the e2e tests (npm run test:e2e)
+  s3:
+    image: chrislusf/seaweedfs:4.50
+    restart: unless-stopped
+    command: server -s3 -dir=/data
+    ports:
+      - "8333:8333"
+
 volumes:
   postgresql:
     driver: local
