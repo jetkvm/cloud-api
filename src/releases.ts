@@ -513,6 +513,34 @@ async function getReleaseByRange(
   return latestRelease;
 }
 
+/**
+ * The release a background update check offers: the newest release that is
+ * rolling out, if the device is in its bucket and it has a build for the SKU,
+ * else the default (the newest 100% release with a build for the SKU). A
+ * staged release without a build for the SKU (e.g. a SKU-specific build has
+ * not shipped yet) keeps the default rather than 404 the whole request.
+ */
+async function rolledOutRelease(
+  prefix: string,
+  sku: string,
+  deviceId: string,
+): Promise<ReleaseMetadata> {
+  // Sequential on purpose: when the prefix has no releases at all, the 404
+  // from the latest lookup must win over the 500 from the default lookup.
+  const latest = await getLatestRelease(prefix, sku);
+  const fallback = await getDefaultRelease(prefix, sku);
+
+  const useLatest =
+    latest.artifacts.length > 0 &&
+    (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
+
+  const chosen = useLatest ? latest : fallback;
+  if (!chosen) {
+    throw new NotFoundError(`No ${prefix} release is rolled out yet for SKU "${sku}"`);
+  }
+  return dbReleaseToMetadata(chosen, sku);
+}
+
 export async function Retrieve(req: Request, res: Response) {
   const query = parseQuery(retrieveQuerySchema, req);
   const { sku, deviceId } = query;
@@ -522,7 +550,6 @@ export async function Retrieve(req: Request, res: Response) {
     app: toSemverRange(query.appVersion),
     system: toSemverRange(query.systemVersion),
   };
-  const skipRollout = artifacts.some(({ kind }) => constraints[kind] !== "*");
 
   // Prereleases are not imported into the DB by the stable sync script.
   if (query.prerelease) {
@@ -541,45 +568,17 @@ export async function Retrieve(req: Request, res: Response) {
     return res.json(remoteRelease);
   }
 
-  // Version-constrained stable requests skip rollout but still read DB metadata.
-  if (skipRollout) {
-    const constrained: OtaReleases = {};
-    for (const { kind, prefix } of artifacts) {
-      constrained[kind] = dbReleaseToMetadata(
-        await getReleaseByRange(prefix, sku, constraints[kind]),
-        sku,
-      );
-    }
-    const responseJson = toRelease(constrained);
-    await addStableSigUrls(responseJson);
-    return res.json(responseJson);
-  }
-
-  // Background update checks follow rollout percentages so new releases roll
-  // out gradually. Devices outside the bucket fall back to the default (the
-  // newest 100%-rolled-out release). If the latest release lacks a compatible
-  // artifact for this SKU (e.g. a SKU-specific build hasn't shipped yet) we
-  // silently keep the default rather than 404 the whole request.
+  // A pinned part (appVersion, systemVersion) gets the newest release in its
+  // range, rolled out or not. Every other part follows the rollout, as a
+  // background update check does, so pinning one part never offers an
+  // unreleased build of the other.
   const offered: OtaReleases = {};
   await Promise.all(
     artifacts.map(async ({ kind, prefix }) => {
-      // Sequential on purpose: when the prefix has no releases at all, the
-      // 404 from the latest lookup must win over the 500 from the default
-      // lookup, which the parallel form left to query timing.
-      const latest = await getLatestRelease(prefix, sku);
-      const fallback = await getDefaultRelease(prefix, sku);
-
-      const useLatest =
-        latest.artifacts.length > 0 &&
-        (await isDeviceEligibleForLatestRelease(latest.rolloutPercentage, deviceId));
-
-      const chosen = useLatest ? latest : fallback;
-      if (!chosen) {
-        throw new NotFoundError(
-          `No ${prefix} release is rolled out yet for SKU "${sku}"`,
-        );
-      }
-      offered[kind] = dbReleaseToMetadata(chosen, sku);
+      offered[kind] =
+        constraints[kind] === "*"
+          ? await rolledOutRelease(prefix, sku, deviceId)
+          : dbReleaseToMetadata(await getReleaseByRange(prefix, sku, constraints[kind]), sku);
     }),
   );
 

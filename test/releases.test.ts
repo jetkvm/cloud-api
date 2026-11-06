@@ -456,6 +456,16 @@ describe("Retrieve handler", () => {
       });
     });
 
+    it("pins only the requested part; the other follows the rollout", async () => {
+      await createDbReleasePair("3.0.0", 100);
+      await createDbReleasePair("3.1.0", 0);
+
+      const res = createMockResponse();
+      await Retrieve(createMockRequest({ deviceId: "pinned-device", appVersion: "3.1.0" }), res);
+
+      expect(jsonBody(res)).toMatchObject({ appVersion: "3.1.0", systemVersion: "3.0.0" });
+    });
+
     it("omits DB-backed stable sigUrl fields when sibling .sig objects are absent", async () => {
       await createDbReleasePair("3.1.1", 100);
       mockArtifactSig("app", "3.1.1");

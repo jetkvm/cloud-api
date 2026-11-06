@@ -121,6 +121,39 @@ describe("an update check", () => {
   });
 });
 
+describe("an update check that pins one part", () => {
+  it("gets the other part as a background check would: rolled out, with a build for the SKU", async () => {
+    // system 0.3.0 is registered but not released; app 0.5.0 has no SDMMC build
+    await setRollouts({ app: { "0.4.0": 100, "0.5.0": 100 }, system: { "0.2.0": 100 } });
+
+    expect(await offered({ ...device(9, V2), appVersion: "0.5.0" })).toMatchObject({
+      appVersion: "0.5.0",
+      systemVersion: "0.2.0",
+    });
+    expect(await offered({ ...device(9, V2), systemVersion: "0.3.0" })).toMatchObject({
+      appVersion: "0.5.0",
+      systemVersion: "0.3.0",
+    });
+
+    await setRollouts({ app: { "0.4.0": 100, "0.5.0": 100 }, system: { "0.3.0": 100 } });
+    expect(await offered({ ...device(9, SDMMC), systemVersion: "0.3.0" })).toMatchObject({
+      appVersion: "0.4.0",
+      appUrl: cdn("app/0.4.0/skus/jetkvm-v2-sdmmc/jetkvm_app"),
+      systemVersion: "0.3.0",
+    });
+  });
+
+  it("follows the device's rollout bucket for the other part", async () => {
+    await setRollouts({ app: { "0.4.0": 100, "0.5.0": 50 }, system: { "0.3.0": 100 } });
+    expect((await offered({ ...device(9), systemVersion: "0.3.0" })).appVersion).toBe(
+      "0.5.0",
+    );
+    expect((await offered({ ...device(81), systemVersion: "0.3.0" })).appVersion).toBe(
+      "0.4.0",
+    );
+  });
+});
+
 describe("a SKU missing from the newest upload", () => {
   // app 0.5.0 has no SDMMC build; mini 0.5.4 has no wireless build
 
