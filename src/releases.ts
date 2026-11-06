@@ -147,7 +147,7 @@ const objectExists = (key: string) => s3ObjectExists(s3Client, bucketName, key);
  *   - Fails if the requested SKU is not available
  *
  * For legacy versions (no skus/ folder):
- *   - Returns legacy path for SKUs that predate the SKU layout
+ *   - Returns legacy path for SKUs that predate the SKU layout, if the file exists
  *   - Fails for every other SKU because legacy firmware predates
  *     that hardware and may not be compatible
  *
@@ -177,8 +177,9 @@ async function resolveArtifactPath(
   // For legacy versions (pre-SKU folder structure), we only serve the SKUs
   // that predate the layout. This prevents newer hardware variants from
   // rolling back to old firmware that may not have compatible binaries.
-  if (legacyCompatibleSkus(prefix).includes(sku)) {
-    return `${prefix}/${version}/${file}`;
+  const legacyPath = `${prefix}/${version}/${file}`;
+  if (legacyCompatibleSkus(prefix).includes(sku) && (await objectExists(legacyPath))) {
+    return legacyPath;
   }
 
   throw noArtifactForSku(version, sku);
@@ -238,66 +239,69 @@ async function enrichWithSigUrls(release: Release, sku: string): Promise<void> {
   );
 }
 
+/**
+ * The newest version under the artifact's prefix that satisfies the range and
+ * has the artifact for the SKU, and that artifact's path. A version without a
+ * build for the SKU is skipped, as the stable path skips releases without a
+ * compatible artifact, so a SKU missing from one upload does not hide older ones.
+ */
+async function newestVersionWithArtifact(
+  { prefix, file }: Artifact,
+  sku: string,
+  range: string,
+  includePrerelease: boolean,
+): Promise<{ version: string; path: string }> {
+  const response = await s3Client.send(
+    new ListObjectsV2Command({ Bucket: bucketName, Prefix: `${prefix}/`, Delimiter: "/" }),
+  );
+
+  const versions = (response.CommonPrefixes ?? [])
+    .map(cp => cp.Prefix!.split("/")[1])
+    .filter(v => v && semver.valid(v));
+  if (versions.length === 0) {
+    throw new NotFoundError(`No versions found under prefix ${prefix}`);
+  }
+
+  const candidates = semver.rsort(
+    versions.filter(v => semver.satisfies(v, range, { includePrerelease })),
+  );
+  if (candidates.length === 0) {
+    throw new NotFoundError(`No version found under prefix ${prefix} that satisfies ${range}`);
+  }
+
+  for (const version of candidates) {
+    try {
+      return { version, path: await resolveArtifactPath(prefix, version, sku, file) };
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+    }
+  }
+  throw noArtifactForSku(candidates[0], sku);
+}
+
 async function getLatestVersion(
   artifact: Artifact,
   includePrerelease: boolean,
   maxSatisfying: string = "*",
   sku: string,
 ): Promise<ReleaseMetadata> {
-  const { prefix } = artifact;
-  const cacheKey = `${prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
+  const cacheKey = `${artifact.prefix}-${includePrerelease}-${maxSatisfying}-${sku}`;
   const cached = releaseCache.get(cacheKey);
   if (cached) return cached;
 
-  const listCommand = new ListObjectsV2Command({
-    Bucket: bucketName,
-    Prefix: prefix + "/",
-    Delimiter: "/",
-  });
-
-  const response = await s3Client.send(listCommand);
-
-  if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-    throw new NotFoundError(`No versions found under prefix ${prefix}`);
-  }
-
-  // Extract version folder names
-  let versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
-    .filter(Boolean)
-    .filter(v => semver.valid(v));
-
-  if (versions.length === 0) {
-    throw new NotFoundError(`No valid versions found under prefix ${prefix}`);
-  }
-
-  // Get the latest version, optionally including prerelease versions
-  const latestVersion = semver.maxSatisfying(versions, maxSatisfying, {
+  const { version, path } = await newestVersionWithArtifact(
+    artifact,
+    sku,
+    maxSatisfying,
     includePrerelease,
-  }) as string;
-  if (!latestVersion) {
-    throw new NotFoundError(
-      `No version found under prefix ${prefix} that satisfies ${maxSatisfying}`,
-    );
-  }
-
-  const selectedPath = await resolveArtifactPath(prefix, latestVersion, sku, artifact.file);
-  const url = `${baseUrl}/${selectedPath}`;
-
-  const hashResponse = await s3Client.send(
-    new GetObjectCommand({
-      Bucket: bucketName,
-      Key: `${selectedPath}.sha256`,
-    }),
   );
 
+  const hashResponse = await s3Client.send(
+    new GetObjectCommand({ Bucket: bucketName, Key: `${path}.sha256` }),
+  );
   const hash = await streamToString(hashResponse.Body);
 
-  // Cache the release metadata
-  const release: ReleaseMetadata = {
-    version: latestVersion,
-    url,
-    hash,
-  };
+  const release: ReleaseMetadata = { version, url: `${baseUrl}/${path}`, hash };
   releaseCache.set(cacheKey, release);
   return release;
 }
@@ -623,43 +627,8 @@ export const RetrieveLatestSystemRecovery = cachedRedirect(
       );
     }
 
-    const listCommand = new ListObjectsV2Command({
-      Bucket: bucketName,
-      Prefix: `${recovery.prefix}/`,
-      Delimiter: "/",
-    });
-    const response = await s3Client.send(listCommand);
-
-    // Extract version folder names
-    if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-      throw new NotFoundError(`No versions found under prefix ${recovery.prefix} for recovery`);
-    }
-
-    // Get the latest version
-    const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1])
-      .filter(Boolean)
-      .filter(v => semver.valid(v));
-
-    const latestVersion = semver.maxSatisfying(versions, "*", {
-      includePrerelease: query.prerelease,
-    }) as string;
-
-    if (!latestVersion) {
-      throw new NotFoundError(`No valid ${recovery.prefix} recovery versions found`);
-    }
-
-    const artifactPath = await resolveArtifactPath(
-      recovery.prefix,
-      latestVersion,
-      query.sku,
-      recovery.file,
-    );
-
-    if (!(await objectExists(artifactPath))) {
-      throw new NotFoundError(`Recovery image not found for version ${latestVersion}`);
-    }
-
-    return `${baseUrl}/${artifactPath}`;
+    const { path } = await newestVersionWithArtifact(recovery, query.sku, "*", query.prerelease);
+    return `${baseUrl}/${path}`;
   },
 );
 
@@ -680,43 +649,9 @@ function latestArtifactRedirect(kind: OtaKind) {
       if (!artifact) {
         throw new BadRequestError(`SKU "${query.sku}" has no ${kind} artifact`);
       }
-      const { prefix } = artifact;
 
-      const listCommand = new ListObjectsV2Command({
-        Bucket: bucketName,
-        Prefix: `${prefix}/`,
-        Delimiter: "/",
-      });
-      const response = await s3Client.send(listCommand);
-
-      if (!response.CommonPrefixes || response.CommonPrefixes.length === 0) {
-        throw new NotFoundError(`No ${prefix} versions found`);
-      }
-
-      const versions = response.CommonPrefixes.map(cp => cp.Prefix!.split("/")[1]).filter(
-        v => semver.valid(v),
-      );
-
-      const latestVersion = semver.maxSatisfying(versions, "*", {
-        includePrerelease: query.prerelease,
-      }) as string;
-
-      if (!latestVersion) {
-        throw new NotFoundError(`No valid ${prefix} versions found`);
-      }
-
-      const artifactPath = await resolveArtifactPath(
-        prefix,
-        latestVersion,
-        query.sku,
-        artifact.file,
-      );
-
-      if (!(await objectExists(artifactPath))) {
-        throw new NotFoundError(`${prefix} artifact not found for version ${latestVersion}`);
-      }
-
-      return `${baseUrl}/${artifactPath}`;
+      const { path } = await newestVersionWithArtifact(artifact, query.sku, "*", query.prerelease);
+      return `${baseUrl}/${path}`;
     },
   );
 }

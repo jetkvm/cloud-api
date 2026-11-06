@@ -80,7 +80,8 @@ function mockS3HashFile(
     Contents: [],
   });
 
-  // Mock legacy hash path
+  // The legacy artifact and its hash
+  s3Mock.on(HeadObjectCommand, { Key: artifactPath }).resolves({});
   s3Mock.on(GetObjectCommand, { Key: `${artifactPath}.sha256` }).resolves({
     Body: createAsyncIterable(hash) as any,
   });

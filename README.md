@@ -60,7 +60,8 @@ and `E2E_S3_ENDPOINT`.
 ### Comparing two deployments
 
 `npm run compare` sends the same requests to two deployments of the API and
-reports where the answers differ, grouped by cause:
+reports where the answers differ, grouped by cause. In a terminal it asks you to
+mark each group as expected or not, and exits with 0 only when you mark them all:
 
 ```bash
 npm run compare -- --candidate local

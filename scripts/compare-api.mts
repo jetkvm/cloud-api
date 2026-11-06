@@ -9,6 +9,7 @@
  */
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
 import { parseArgs } from "node:util";
 
 const ALIASES: Record<string, string> = {
@@ -447,10 +448,17 @@ async function main() {
     }
   }
 
+  // In a terminal, each group of differences must be acknowledged as expected by the person
+  // running the compare. Nothing is remembered between runs.
+  const prompt = process.stdin.isTTY
+    ? createInterface({ input: process.stdin, output: process.stdout })
+    : undefined;
   const sorted = [...groups.values()].sort((a, b) => b.members.length - a.members.length);
-  for (const { area, label, field, members } of sorted) {
+  const acknowledged: { area: Area; label: string; field: string; expected: boolean }[] =
+    [];
+  for (const [index, { area, label, field, members }] of sorted.entries()) {
     console.log(
-      `✗ ${area}: ${label}: ${field}  (${members.length} request${members.length === 1 ? "" : "s"})`,
+      `✗ [${index + 1}/${sorted.length}] ${area}: ${label}: ${field}  (${members.length} request${members.length === 1 ? "" : "s"})`,
     );
     for (const member of members.slice(0, exampleCount)) {
       const difference = member.differences.find(d => d.field === field)!;
@@ -458,8 +466,21 @@ async function main() {
       console.log(`      reference ${show(difference.reference)}`);
       console.log(`      candidate ${show(difference.candidate)}`);
     }
+    if (prompt) {
+      // End of input (Ctrl+D) counts as "no"
+      const answer = await prompt
+        .question("  Is this difference expected? [y/N] ")
+        .catch(() => "");
+      acknowledged.push({
+        area,
+        label,
+        field,
+        expected: /^y(es)?$/i.test(answer.trim()),
+      });
+    }
     console.log();
   }
+  prompt?.close();
 
   const differing = results.filter(result => result.differences.length > 0);
   for (const area of areas) {
@@ -479,14 +500,29 @@ async function main() {
   }
 
   if (args.json) {
-    writeFileSync(args.json, JSON.stringify({ reference, candidate, results }, null, 2));
+    writeFileSync(
+      args.json,
+      JSON.stringify({ reference, candidate, acknowledged, results }, null, 2),
+    );
     console.log(`\nFull results: ${args.json}`);
   }
 
+  if (differing.length === 0) {
+    console.log("\nNo differences");
+    process.exit(0);
+  }
+  console.log(`\n${differing.length} of ${results.length} requests differ`);
+  if (!prompt) {
+    console.log("Run in a terminal to review each group of differences.");
+    process.exit(1);
+  }
+  const unexpected = acknowledged.filter(group => !group.expected).length;
   console.log(
-    `\n${differing.length === 0 ? "No differences" : `${differing.length} of ${results.length} requests differ`}`,
+    unexpected === 0
+      ? `You marked all ${sorted.length} groups of differences as expected`
+      : `${unexpected} of ${sorted.length} groups of differences are not marked as expected`,
   );
-  process.exit(differing.length === 0 ? 0 : 1);
+  process.exit(unexpected === 0 ? 0 : 1);
 }
 
 await main();

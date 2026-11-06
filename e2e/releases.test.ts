@@ -121,6 +121,33 @@ describe("an update check", () => {
   });
 });
 
+describe("a SKU missing from the newest upload", () => {
+  // app 0.5.0 has no SDMMC build; mini 0.5.4 has no wireless build
+
+  it("does not hide the newest version that has it on the prerelease channel", async () => {
+    await setRollouts({});
+    expect(await offered({ ...device(9, MINI_WIFI), prerelease: "true" })).toMatchObject({
+      systemVersion: "0.5.3",
+      systemUrl: cdn("mini/0.5.3/skus/jetkvm-mini-wireless/jetkvm-mini.bin"),
+    });
+  });
+
+  it.each([
+    [
+      "/releases/app/latest?sku=jetkvm-v2-sdmmc",
+      "app/0.4.0/skus/jetkvm-v2-sdmmc/jetkvm_app",
+    ],
+    [
+      "/releases/system_recovery/latest?sku=jetkvm-mini-wireless",
+      "mini/0.5.3/skus/jetkvm-mini-wireless/jetkvm-mini-full.bin",
+    ],
+  ])("does not hide the newest version that has it from %s", async (path, key) => {
+    const response = await api(path);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(cdn(key));
+  });
+});
+
 describe("an update check that cannot be answered", () => {
   it("gets 404 while every release is registered at 0%", async () => {
     await setRollouts({});
