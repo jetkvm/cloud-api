@@ -1,4 +1,4 @@
-FROM node:22.23.4-bookworm-slim AS base
+FROM node:22.23.5-bookworm-slim AS base
 LABEL org.opencontainers.image.source="https://github.com/jetkvm/cloud-api"
 WORKDIR /usr/src/app
 
